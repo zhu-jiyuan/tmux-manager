@@ -178,8 +178,7 @@ pub fn close(id: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, ValueEnum, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
 pub enum PromptKind {
     Create,
     Rename,
@@ -194,14 +193,42 @@ impl PromptKind {
     }
 }
 
+/// What an open prompt does with the answer, settled when it opens: `tab`
+/// cancels a pending prompt, so neither the row nor the mode can change
+/// underneath it.
+#[derive(Serialize, Deserialize)]
+enum Question {
+    /// Rename the window with this id; `old` is its name when asked.
+    RenameWindow {
+        window: String,
+        old: String,
+    },
+    /// Rename the session with this id; `old` is its name when asked.
+    RenameSession {
+        session: String,
+        old: String,
+    },
+    /// Open a window in the session with this id; the name is optional.
+    NewWindow {
+        session: String,
+    },
+    NewSession,
+}
+
+impl Question {
+    /// What the input line starts with: the current name for a rename.
+    fn old(&self) -> &str {
+        match self {
+            Question::RenameWindow { old, .. } | Question::RenameSession { old, .. } => old,
+            Question::NewWindow { .. } | Question::NewSession => "",
+        }
+    }
+}
+
 /// The open inline prompt.
 #[derive(Serialize, Deserialize)]
 struct Pending {
-    kind: PromptKind,
-    /// The row the question is about.
-    id: RowId,
-    /// The name it had when asked, so an unchanged answer does nothing.
-    old: String,
+    question: Question,
     /// The filter the user had typed, put back when the prompt closes.
     query: String,
 }
@@ -219,16 +246,17 @@ fn take_pending(popup: &Popup) -> Result<Option<Pending>> {
     Ok(pending)
 }
 
-/// `session_name`, `window_index`, `window_name` of a session or window.
-fn describe(target: &str) -> Result<[String; 3]> {
+/// `session_id`, `session_name`, `window_index`, `window_name` of a session
+/// or window.
+fn describe(target: &str) -> Result<[String; 4]> {
     let text = tmux::run(&[
         "display-message",
         "-p",
         "-t",
         target,
-        "#{session_name}\t#{window_index}\t#{window_name}",
+        "#{session_id}\t#{session_name}\t#{window_index}\t#{window_name}",
     ])?;
-    let fields: Vec<String> = text.splitn(3, '\t').map(str::to_string).collect();
+    let fields: Vec<String> = text.splitn(4, '\t').map(str::to_string).collect();
     fields.try_into().ok().context("display-message output")
 }
 
@@ -250,57 +278,62 @@ pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
         return Ok(());
     };
     let popup = Popup::current()?;
-    let [session, index, window] = describe(target)?;
-    let (old, header) = match kind {
+    let [session_id, session, index, window] = describe(target)?;
+    let (question, header) = match kind {
         PromptKind::Rename if id.is_window() => (
-            window.clone(),
+            Question::RenameWindow {
+                window: target.to_string(),
+                old: window.clone(),
+            },
             format!("Rename window {index}: {window} · Enter / Esc"),
         ),
         PromptKind::Rename => (
-            session.clone(),
+            Question::RenameSession {
+                session: target.to_string(),
+                old: session.clone(),
+            },
             format!("Rename session {session} · Enter / Esc"),
         ),
         PromptKind::Create if popup.mode() == Mode::Windows => (
-            String::new(),
+            Question::NewWindow {
+                session: session_id,
+            },
             format!("New window in {session} (name optional) · Enter / Esc"),
         ),
-        PromptKind::Create => (String::new(), "New session name · Enter / Esc".to_string()),
+        PromptKind::Create => (
+            Question::NewSession,
+            "New session name · Enter / Esc".to_string(),
+        ),
     };
+    let old = arg(question.old());
     let pending = Pending {
-        kind,
-        id,
-        old: old.clone(),
+        question,
         query: env::var("FZF_QUERY")?,
     };
     popup.write_json(Sidecar::Prompt, &pending)?;
     println!(
-        "change-prompt({})+change-query{}+change-header{}+disable-search",
+        "change-prompt({})+change-query{old}+change-header{}+disable-search",
         kind.prompt(),
-        arg(&old),
         arg(&header),
     );
     Ok(())
 }
 
 /// Carry out an answered prompt; `false` means there was nothing to do.
-fn apply(popup: &Popup, pending: &Pending, answer: &str) -> Result<bool> {
-    let Some(target) = pending.id.target() else {
-        return Ok(false);
-    };
-    match pending.kind {
-        PromptKind::Rename => {
-            if answer.is_empty() || answer == pending.old {
-                return Ok(false);
-            }
-            let command = if pending.id.is_window() {
-                "rename-window"
-            } else {
-                "rename-session"
-            };
-            tmux::run(&[command, "-t", target, answer])?;
+fn apply(question: &Question, answer: &str) -> Result<bool> {
+    match question {
+        Question::RenameWindow { old, .. } | Question::RenameSession { old, .. }
+            if answer.is_empty() || answer == old =>
+        {
+            return Ok(false);
         }
-        PromptKind::Create if popup.mode() == Mode::Windows => {
-            let session = tmux::run(&["display-message", "-p", "-t", target, "#{session_id}"])?;
+        Question::RenameWindow { window, .. } => {
+            tmux::run(&["rename-window", "-t", window, answer])?;
+        }
+        Question::RenameSession { session, .. } => {
+            tmux::run(&["rename-session", "-t", session, answer])?;
+        }
+        Question::NewWindow { session } => {
             let session = format!("{session}:");
             let mut args = vec!["new-window", "-d", "-t", &session];
             if !answer.is_empty() {
@@ -308,10 +341,8 @@ fn apply(popup: &Popup, pending: &Pending, answer: &str) -> Result<bool> {
             }
             tmux::run(&args)?;
         }
-        PromptKind::Create => {
-            if answer.is_empty() {
-                return Ok(false);
-            }
+        Question::NewSession if answer.is_empty() => return Ok(false),
+        Question::NewSession => {
             tmux::run(&["new-session", "-d", "-s", answer])?;
         }
     }
@@ -327,7 +358,7 @@ pub fn enter() -> Result<()> {
     };
     let answer = env::var("FZF_QUERY")?;
     let restore = restore(&popup, &pending.query);
-    match apply(&popup, &pending, answer.trim()) {
+    match apply(&pending.question, answer.trim()) {
         Ok(true) => println!("{restore}+{}", reload()),
         Ok(false) => println!("{restore}"),
         Err(error) => println!("{restore}+change-header{}", arg(&format!("tmm: {error}"))),

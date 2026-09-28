@@ -9,9 +9,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RowId {
     Session(String),
     Window(String),
