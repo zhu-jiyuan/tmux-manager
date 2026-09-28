@@ -30,44 +30,18 @@ fn csi_len(s: &str) -> Option<usize> {
     }
 }
 
-const ANSI: [&str; 8] = [
-    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-];
-
-/// SGR parameter for a tmux-style colour: a name, `brightNAME`, `colourN`, `N`, or `#rrggbb`.
-fn sgr(colour: &str) -> String {
-    let name = colour.to_ascii_lowercase();
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    if let Some(n) = name
-        .strip_prefix("colour")
-        .or_else(|| name.strip_prefix("color"))
-        .filter(|n| digits(n))
-    {
-        return format!("38;5;{n}");
-    }
-    if digits(&name) {
-        return format!("38;5;{name}");
-    }
-    if name.len() == 7 && name.starts_with('#') {
-        let channel = |i: usize| u8::from_str_radix(&name[i..i + 2], 16);
-        if let (Ok(r), Ok(g), Ok(b)) = (channel(1), channel(3), channel(5)) {
-            return format!("38;2;{r};{g};{b}");
-        }
-    }
-    if let Some(base) = name.strip_prefix("bright")
-        && let Some(index) = ANSI.iter().position(|c| *c == base)
-    {
-        return (90 + index).to_string();
-    }
-    if let Some(index) = ANSI.iter().position(|c| *c == name) {
-        return (30 + index).to_string();
-    }
-    "39".to_string()
+/// The foreground colours tmm paints with: the plain ANSI ones, never the
+/// bright variants (see `rows::dots` for why).
+#[derive(Clone, Copy)]
+pub enum Colour {
+    Green = 32,
+    Yellow = 33,
+    Blue = 34,
 }
 
 /// `text` in a foreground colour, reset afterwards.
-pub fn tint(text: &str, colour: &str) -> String {
-    format!("\x1b[{}m{text}\x1b[0m", sgr(colour))
+pub fn tint(text: &str, colour: Colour) -> String {
+    format!("\x1b[{}m{text}\x1b[0m", colour as u8)
 }
 
 /// `text` in bold, reset afterwards.
@@ -158,17 +132,18 @@ pub fn clip_line(line: &str, columns: usize) -> String {
     out
 }
 
-/// Keep the bottom `rows` non-blank lines of a screen capture, clipped to `columns`.
-pub fn fit_frame(frame: &str, columns: usize, rows: usize) -> String {
-    let mut lines: Vec<&str> = frame.lines().collect();
-    while lines
+/// The last `lines` lines of a screen capture once its trailing blank lines
+/// are dropped, each clipped to `columns`.
+pub fn fit_frame(frame: &str, columns: usize, lines: usize) -> String {
+    let mut kept: Vec<&str> = frame.lines().collect();
+    while kept
         .last()
         .is_some_and(|line| strip(line).trim().is_empty())
     {
-        lines.pop();
+        kept.pop();
     }
-    let start = lines.len().saturating_sub(rows);
-    lines[start..]
+    let start = kept.len().saturating_sub(lines);
+    kept[start..]
         .iter()
         .map(|line| clip_line(line, columns))
         .collect::<Vec<_>>()
@@ -180,19 +155,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn colours_follow_tmux_names() {
-        let code = |c: &str| tint("x", c).split('m').next().unwrap().to_string();
-        assert_eq!(code("blue"), "\x1b[34");
-        assert_eq!(code("brightred"), "\x1b[91");
-        assert_eq!(code("colour201"), "\x1b[38;5;201");
-        assert_eq!(code("12"), "\x1b[38;5;12");
-        assert_eq!(code("#ff8800"), "\x1b[38;2;255;136;0");
-        assert_eq!(code("nonsense"), "\x1b[39");
+    fn colours_are_the_plain_ansi_ones() {
+        assert_eq!(tint("x", Colour::Green), "\x1b[32mx\x1b[0m");
+        assert_eq!(tint("x", Colour::Yellow), "\x1b[33mx\x1b[0m");
+        assert_eq!(tint("x", Colour::Blue), "\x1b[34mx\x1b[0m");
     }
 
     #[test]
     fn width_ignores_escapes_and_counts_wide_chars() {
-        assert_eq!(visible_width(&tint("ab", "red")), 2);
+        assert_eq!(visible_width(&tint("ab", Colour::Blue)), 2);
         assert_eq!(visible_width("界z"), 3);
         assert_eq!(pad("ab", 4), "ab  ");
     }

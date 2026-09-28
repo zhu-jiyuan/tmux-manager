@@ -18,12 +18,12 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
 
-use crate::ansi::{clip_line, faint, fit_frame};
+use crate::ansi::{Colour, bold, clip_line, faint, fit_frame, tint};
 use crate::popup::{Popup, Sidecar};
 use crate::rows::RowId;
 use crate::{projects, tmux};
 
-const GONE: &str = "\x1b[1mGone: this row no longer exists\x1b[0m";
+const GONE: &str = "Gone: this row no longer exists";
 
 /// Window ids of a session in index order, and whether each is active.
 fn windows_of(session: &str) -> Result<Vec<(String, bool)>> {
@@ -105,7 +105,7 @@ fn render(popup: &Popup, id: &RowId, columns: usize, lines: usize) -> String {
         return directory(path, columns, lines);
     }
     let Ok(target) = target(popup, id) else {
-        return GONE.to_string();
+        return bold(GONE);
     };
     let info = tmux::run_lossy(&[
         "display-message",
@@ -115,7 +115,7 @@ fn render(popup: &Popup, id: &RowId, columns: usize, lines: usize) -> String {
         "#{session_name}\t#{window_index}\t#{window_name}\t#{window_panes}",
     ]);
     let [name, index, window, panes] = info.split('\t').collect::<Vec<_>>()[..] else {
-        return GONE.to_string();
+        return bold(GONE);
     };
     let mut title = format!("{name}  ·  {index}: {window}");
     if panes != "1" {
@@ -123,7 +123,7 @@ fn render(popup: &Popup, id: &RowId, columns: usize, lines: usize) -> String {
     }
     let capture = tmux::run_lossy(&["capture-pane", "-p", "-e", "-t", &target]);
     let frame = fit_frame(&capture, columns, lines.saturating_sub(2));
-    let text = format!("\x1b[1m{}\x1b[0m\n\n{frame}", clip_line(&title, columns));
+    let text = format!("{}\n\n{frame}", bold(&clip_line(&title, columns)));
     // An empty capture would leave trailing newlines; fzf counts those as lines.
     text.trim_end_matches('\n').to_string()
 }
@@ -143,10 +143,7 @@ fn git(path: &Path, args: &[&str]) -> String {
 /// A project with no session yet: a bold path, the git branch and last
 /// commit when there is a repository, then what is inside, directories first.
 fn directory(path: &Path, columns: usize, lines: usize) -> String {
-    let mut out = vec![
-        format!("\x1b[1m{}\x1b[0m", projects::shorten(path)),
-        String::new(),
-    ];
+    let mut out = vec![bold(&projects::shorten(path)), String::new()];
     if path.join(".git").exists() {
         let branch = git(path, &["symbolic-ref", "--short", "-q", "HEAD"]);
         let last = git(path, &["log", "-1", "--format=%h %s"]);
@@ -176,7 +173,7 @@ fn directory(path: &Path, columns: usize, lines: usize) -> String {
     });
     for (dir, name) in entries {
         out.push(if dir {
-            format!("\x1b[34m{name}/\x1b[0m")
+            tint(&format!("{name}/"), Colour::Blue)
         } else {
             name
         });

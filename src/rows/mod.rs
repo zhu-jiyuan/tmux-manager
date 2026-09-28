@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::agent::{self, State};
-use crate::ansi::{faint, pad, tint, visible_width};
+use crate::ansi::{Colour, faint, pad, tint, visible_width};
 use crate::popup::Mode;
 use crate::projects::Project;
 use crate::state::Switcher;
@@ -142,8 +142,8 @@ fn dots(states: &[State]) -> String {
         .filter_map(|state| {
             let colour = match state {
                 State::Plain => return None,
-                State::Working => "green",
-                State::Waiting => "yellow",
+                State::Working => Colour::Green,
+                State::Waiting => Colour::Yellow,
             };
             Some(tint("●", colour))
         })
