@@ -27,10 +27,12 @@ const WAIT_TOOLS: &[&str] = &["askuserquestion", "enterplanmode", "exitplanmode"
 /// The notifications that ask for the user, out of the many kinds sent.
 const WAIT_NOTIFICATIONS: &[&str] = &["permission_prompt", "idle_prompt", "elicitation_dialog"];
 /// Claude Code's own status line: its permission and plan prompts, its limit
-/// messages, and the busy hint it shows while a turn runs.
+/// messages, and the busy hint it shows while a turn runs. Since 2.1 the busy
+/// hint is only the spinner line, `✻ Verbing…` then `✻ Verbing… (3s · …)`;
+/// a finished turn leaves `✻ Verbed for 3s` behind, with no ellipsis.
 static HINTS: Hints = Hints::new(
-    r"do you want to proceed|enter to confirm|waiting for (?:your|user)|you.ve hit your limit|usage limit reached|rate limit exceeded",
-    r"esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt",
+    r"do you want to (?:proceed|create|make this edit)|enter to confirm|waiting for (?:your|user)|you.ve hit your limit|usage limit reached|rate limit exceeded",
+    r"(?m)esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt|^[·✢✳✶✻✽*] [^\n…]+…(?: \(|[ \t]*$)",
 );
 
 impl Harness for Claude {
@@ -168,5 +170,45 @@ mod tests {
         );
         assert_eq!(HINTS.read("You’ve hit your limit"), State::Waiting);
         assert_eq!(HINTS.read("$ "), State::Waiting);
+    }
+
+    /// The bottom of a 2.1 screen, as `capture-pane` prints it.
+    fn screen(above_input: &str) -> String {
+        let rule = "─".repeat(40);
+        format!(
+            "⏺ I'll create hello.txt.\n\n{above_input}\n\n{rule}\n❯ \n{rule}\n  Haiku 4.5  $0.00\n  ⏸ manual mode on\n"
+        )
+    }
+
+    #[test]
+    fn spinner_means_working() {
+        for spinner in [
+            "✻ Waddling…",
+            "✢ Lollygagging… (1s · thinking)",
+            "· Lollygagging… (3s · ↓ 138 tokens · thought for 2s)",
+            "✶ Reticulating splines… (running PreToolUse hook · 4s)",
+            "* Fermenting… (5m 50s · ↓ 10.6k tokens)",
+        ] {
+            assert_eq!(HINTS.read(&screen(spinner)), State::Working, "{spinner}");
+        }
+        assert_eq!(
+            HINTS.read(&screen("✻ Worked for 5s · done 12:31 AM")),
+            State::Waiting,
+            "a finished turn"
+        );
+        assert_eq!(
+            HINTS.read(&screen("⏺ Loading… (please wait)")),
+            State::Waiting,
+            "an ellipsis in the transcript is not the spinner"
+        );
+        assert_eq!(
+            HINTS.read(&format!("{}{}", screen("✻ Waddling…"), "\n".repeat(30))),
+            State::Working,
+            "the empty rows under a young session are not the tail"
+        );
+        assert_eq!(
+            HINTS.read(" Do you want to create hello.txt?\n ❯ 1. Yes\n   3. No\n\n Esc to cancel · Tab to amend"),
+            State::Waiting
+        );
     }
 }

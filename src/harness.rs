@@ -152,7 +152,9 @@ pub struct Hints {
     compiled: OnceLock<(Regex, Regex)>,
 }
 
-/// How many of the captured lines the hints are read from.
+/// How many of the captured lines, counted up from the last one with text,
+/// the hints are read from. Enough to reach Claude Code's spinner above its
+/// input box and status lines, and little enough to miss old output.
 const TAIL_LINES: usize = 14;
 
 impl Hints {
@@ -171,7 +173,12 @@ impl Hints {
                 Regex::new(self.working).unwrap(),
             )
         });
-        let lines: Vec<&str> = screen.lines().collect();
+        // capture-pane prints the empty rows below the last output too; a
+        // tall pane with little on it would otherwise leave nothing to read.
+        let mut lines: Vec<&str> = screen.lines().collect();
+        while lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
         let start = lines.len().saturating_sub(TAIL_LINES);
         let tail = lines[start..].join("\n").to_lowercase();
         if waiting.is_match(&tail) {
