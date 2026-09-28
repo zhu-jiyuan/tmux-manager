@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use super::{CommandLine, Harness, Hints, Hook, INTERPRETERS, MAIN, Records, Update};
+use super::{CommandLine, Harness, Hints, Hook, Update};
 use crate::agent::State;
 use crate::install;
 
@@ -38,14 +38,12 @@ impl Harness for Codex {
 
     fn runs(&self, command: &str) -> bool {
         let command = CommandLine::parse(command);
+        // Started as `codex`; the per-platform binary the npm wrapper runs
+        // (`codex-aarch64-apple-darwin` and the like); or the npm package.
         command.executable == "codex"
             || command.executable.starts_with("codex-aarch64-")
             || command.executable.starts_with("codex-x86_64-")
             || command.runs_script("/@openai/codex/")
-    }
-
-    fn suspect(&self, command: &str) -> bool {
-        command.starts_with("codex") || INTERPRETERS.contains(&command)
     }
 
     fn install(&self, command: &str) -> Result<()> {
@@ -78,26 +76,19 @@ impl Harness for Codex {
             _ => return None,
         };
         Some(Update {
-            slot: MAIN,
             state,
             event: hook.event,
         })
     }
 
-    fn pane_state(&self, records: &Records, screen: &dyn Fn() -> String) -> State {
-        match records.get(MAIN) {
-            // The approval hook fires before the answer; only a visible busy
-            // hint proves the agent has resumed.
-            Some(record) if record.event != "PermissionRequest" => record.state,
-            _ => HINTS.read(&screen()),
-        }
+    fn hints(&self) -> &'static Hints {
+        &HINTS
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::one_record;
 
     fn state(event: Option<&str>, stdin: &str) -> Option<State> {
         Codex.hook(event, stdin).map(|update| update.state)
@@ -109,7 +100,6 @@ mod tests {
         assert!(Codex.runs("codex-x86_64-unknown-linux-musl"));
         assert!(Codex.runs("node /usr/lib/node_modules/@openai/codex/bin/codex.js"));
         assert!(!Codex.runs("/Users/me/.local/share/claude/versions/2.1.263"));
-        assert!(Codex.suspect("codex-aarch64-ap") && Codex.suspect("bun") && !Codex.suspect("zsh"));
     }
 
     #[test]
@@ -143,32 +133,6 @@ mod tests {
             ),
             None,
             "a spawned agent's hooks say nothing about the parent"
-        );
-    }
-
-    #[test]
-    fn records_settle_the_state_unless_an_approval_is_pending() {
-        let record = |state, event| one_record("codex", state, event);
-        let busy = || "Working (esc to interrupt)".to_string();
-        assert_eq!(
-            Codex.pane_state(&record(State::Waiting, "Stop"), &busy),
-            State::Waiting,
-            "a record wins over the screen"
-        );
-        assert_eq!(
-            Codex.pane_state(&record(State::Waiting, "PermissionRequest"), &busy),
-            State::Working,
-            "a busy hint after an approval hook means it resumed"
-        );
-        assert_eq!(
-            Codex.pane_state(&record(State::Waiting, "PermissionRequest"), &|| "› "
-                .into()),
-            State::Waiting
-        );
-        assert_eq!(
-            Codex.pane_state(&Records::new(), &busy),
-            State::Working,
-            "no record: the screen decides"
         );
     }
 

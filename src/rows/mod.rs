@@ -252,8 +252,8 @@ mod tests {
             pid: 1,
             dead: false,
             tty: String::new(),
-            command: "zsh".to_string(),
-            records: HashMap::new(),
+            at_prompt: true,
+            record: None,
         }
     }
 

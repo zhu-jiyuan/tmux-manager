@@ -8,8 +8,8 @@
 //! keeps the records and merges the answers.
 //!
 //! Cost matters because the switcher refreshes every second. The collector
-//! only runs `ps` when at least one pane looks like it could hold an agent,
-//! and only captures the screen of panes that do.
+//! skips panes sitting at their shell prompt, runs one `ps` for the rest,
+//! and only captures the screen of panes where it found an agent.
 
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -21,31 +21,12 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::harness::{self, Harness, MAIN, Record, Records};
+use crate::harness::{self, Harness, Record};
 use crate::tmux::{self, Pane};
 
-/// The tmux pane option holding a record slot.
-pub fn option(slot: &str) -> String {
-    if slot == MAIN {
-        "@tmm-agent".to_string()
-    } else {
-        format!("@tmm-agent-{slot}")
-    }
-}
-
-/// Every slot some harness writes, `main` first and each once: the record
-/// columns `tmux::panes` fetches.
-pub fn slots() -> Vec<&'static str> {
-    let mut slots = vec![MAIN];
-    for harness in harness::ALL {
-        for slot in harness.slots() {
-            if !slots.contains(slot) {
-                slots.push(slot);
-            }
-        }
-    }
-    slots
-}
+/// The tmux pane option a hook stores its record in; `tmux::panes` reads it
+/// back as `#{@tmm-agent}`.
+pub const OPTION: &str = "@tmm-agent";
 
 /// Ordered by priority: waiting beats working beats plain, so the strongest
 /// state of a set of panes is simply the maximum.
@@ -126,14 +107,15 @@ fn descendants(root: i32, table: &Table) -> HashSet<i32> {
     found
 }
 
-/// State of one pane whose process tree starts at `root`, from the records
-/// stored on it by slot. Each harness found in the tree reads its own live
-/// records: a record is live when its pid runs that harness and its start
-/// time matches, so a reused PID cannot resurrect a stale one. The screen is
-/// captured at most once, and only if a harness asks for it.
+/// State of one pane whose process tree starts at `root`, given the record
+/// stored on it. The record is live when its pid runs a harness in the tree
+/// and its start time matches, so a reused PID cannot resurrect a stale one;
+/// only the harness running that pid gets it. Every harness found in the
+/// tree answers, and the strongest answer wins. The screen is captured at
+/// most once, and only if a harness asks for it.
 fn pane_state(
     root: i32,
-    records: &HashMap<&'static str, String>,
+    record: Option<&str>,
     table: &Table,
     capture: impl Fn() -> String,
 ) -> State {
@@ -141,45 +123,40 @@ fn pane_state(
         .into_iter()
         .filter_map(|pid| harness::detect(&table.get(&pid)?.command).map(|h| (pid, h)))
         .collect();
-    if agents.is_empty() {
-        return State::Plain;
-    }
+    let live = record
+        .and_then(|text| serde_json::from_str::<Record>(text).ok())
+        .filter(|saved| {
+            agents.contains_key(&saved.pid)
+                && table
+                    .get(&saved.pid)
+                    .is_some_and(|process| process.started == saved.started)
+        });
     let cell = OnceCell::new();
     let screen = || cell.get_or_init(&capture).clone();
-    let mut seen = HashSet::new();
-    let mut state = State::Plain;
-    for harness in agents.values() {
-        if !seen.insert(harness.name()) {
-            continue;
-        }
-        let live: Records = harness
-            .slots()
-            .iter()
-            .filter_map(|slot| {
-                let saved: Record = serde_json::from_str(records.get(slot)?).ok()?;
-                let owner = agents.get(&saved.pid)?;
-                let process = table.get(&saved.pid)?;
-                (owner.name() == harness.name() && process.started == saved.started)
-                    .then_some((*slot, saved))
-            })
-            .collect();
-        state = state.max(harness.pane_state(&live, &screen));
-    }
-    state
+    harness::ALL
+        .iter()
+        .filter(|harness| agents.values().any(|agent| agent.name() == harness.name()))
+        .map(|harness| {
+            let own = live
+                .as_ref()
+                .filter(|saved| agents[&saved.pid].name() == harness.name());
+            harness.pane_state(own, &screen)
+        })
+        .max()
+        .unwrap_or(State::Plain)
 }
 
 /// One state per window, keyed by window id. `ps` and `capture-pane` run
-/// only for panes that could hold an agent: a hook record is present, or
-/// some harness accepts the foreground command. `TMM_AGENT_SCAN=always`
-/// checks every pane.
+/// only for panes that could hold an agent: something other than the shell
+/// is in front, or a hook record is present. Which harness it is, if any,
+/// is left to its command line in `ps`, never guessed from a name.
+/// `TMM_AGENT_SCAN=always` checks every pane.
 pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
     let always = env::var("TMM_AGENT_SCAN").is_ok_and(|v| v == "always");
-    let suspicious = |pane: &Pane| {
-        !pane.dead
-            && (always
-                || pane.records.values().any(|record| !record.is_empty())
-                || harness::suspect(&pane.command))
-    };
+    // A record catches the agents a shell runs from a command line, which
+    // look like a pane at its prompt.
+    let suspicious =
+        |pane: &Pane| !pane.dead && (always || !pane.at_prompt || pane.record.is_some());
     let ttys: Vec<&str> = panes
         .iter()
         .filter(|pane| suspicious(pane))
@@ -190,7 +167,9 @@ pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
     let mut windows = BTreeMap::new();
     for pane in panes {
         let state = if suspicious(pane) {
-            pane_state(pane.pid, &pane.records, &table, || {
+            pane_state(pane.pid, pane.record.as_deref(), &table, || {
+                // The visible pane plus 20 lines of history, so a short pane
+                // still fills the tail the hints read.
                 tmux::run_lossy(&["capture-pane", "-p", "-t", &pane.id, "-S", "-20"])
             })
         } else {
@@ -252,7 +231,7 @@ pub fn hook(name: &str, event: Option<&str>) -> Result<()> {
         "-p",
         "-t",
         &pane,
-        &option(update.slot),
+        OPTION,
         &serde_json::to_string(&record)?,
     ])?;
     Ok(())
@@ -262,16 +241,6 @@ pub fn hook(name: &str, event: Option<&str>) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn slots_are_options_on_the_pane() {
-        assert_eq!(option(MAIN), "@tmm-agent");
-        assert_eq!(option("subagent"), "@tmm-agent-subagent");
-        let slots = slots();
-        assert_eq!(slots[0], MAIN);
-        let unique: HashSet<&str> = slots.iter().copied().collect();
-        assert_eq!(unique.len(), slots.len(), "each slot once: {slots:?}");
-    }
 
     #[test]
     fn stale_records_fall_back_to_the_screen() {
@@ -287,14 +256,13 @@ mod tests {
             );
             t
         };
-        let records = |text: &str| HashMap::from([(MAIN, text.to_string())]);
         let stale = json!({"pid": 10, "started": "old", "state": "working", "harness": "codex", "event": "x"}).to_string();
         assert_eq!(
-            pane_state(10, &records(&stale), &table("codex"), || "ready".into()),
+            pane_state(10, Some(&stale), &table("codex"), || "ready".into()),
             State::Waiting
         );
         assert_eq!(
-            pane_state(10, &records(&stale), &table("bash"), || {
+            pane_state(10, Some(&stale), &table("bash"), || {
                 "esc to interrupt".into()
             }),
             State::Plain,
@@ -302,11 +270,11 @@ mod tests {
         );
         let fresh = json!({"pid": 10, "started": "new", "state": "working", "harness": "codex", "event": "x"}).to_string();
         assert_eq!(
-            pane_state(10, &records(&fresh), &table("codex"), || "ready".into()),
+            pane_state(10, Some(&fresh), &table("codex"), || "ready".into()),
             State::Working
         );
         assert_eq!(
-            pane_state(10, &HashMap::new(), &table("codex"), || "ready".into()),
+            pane_state(10, None, &table("codex"), || "ready".into()),
             State::Waiting,
             "no record: the harness reads the screen"
         );

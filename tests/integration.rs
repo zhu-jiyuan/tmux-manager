@@ -13,6 +13,17 @@ use std::time::Duration;
 
 const TMM: &str = env!("CARGO_BIN_EXE_tmm");
 
+/// Poll `ready` for up to three seconds; whether it came true.
+fn eventually(ready: impl Fn() -> bool) -> bool {
+    for _ in 0..30 {
+        if ready() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
 struct Server {
     socket: String,
     tmux_env: String,
@@ -558,11 +569,13 @@ fn agent_activity_from_hooks_and_from_the_screen() {
     };
     // A shell whose argv[0] is ".../claude": `ps` shows it as an agent, and
     // hooks typed into it run as its children, the way real hooks do. tmux
-    // still reports the real command name, so the cheap pre-filter would skip
-    // it; the full scan is forced for this test.
+    // names its command after what the system says runs: `bash` on macOS,
+    // where /bin/sh is bash, `claude` on Linux. Neither is `sh`, so with that
+    // as the default shell the pre-filter never takes it for a pane at its
+    // prompt, and the test goes through the filter as real panes do.
     let fake = server.state.join("claude");
     std::os::unix::fs::symlink("/bin/sh", &fake).unwrap();
-    let scan = [("TMM_AGENT_SCAN", "always")];
+    server.tmux(&["set", "-g", "default-shell", "/bin/sh"]);
     server.tmux(&[
         "new-window",
         "-d",
@@ -572,19 +585,15 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         "agent",
         fake.to_str().unwrap(),
     ]);
-    thread::sleep(Duration::from_millis(300));
+    let screen = |target: &str| server.tmux(&["capture-pane", "-p", "-t", target]);
+    assert!(
+        eventually(|| !screen("alpha:1").is_empty()),
+        "the fake agent never showed its prompt"
+    );
     let pane = server.tmux(&["display-message", "-p", "-t", "alpha:1", "#{pane_id}"]);
     let pid = server.tmux(&["display-message", "-p", "-t", "alpha:1", "#{pane_pid}"]);
 
-    let activity = || {
-        let output = server.tmm_with(&["activity"], "", &scan);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
+    let activity = || server.tmm(&["activity"]).trim().to_string();
     assert_eq!(
         activity(),
         r#"{"@0":"plain","@1":"waiting"}"#,
@@ -601,13 +610,11 @@ fn agent_activity_from_hooks_and_from_the_screen() {
             format!("{TMM} hook claude {event}")
         };
         server.tmux(&["send-keys", "-t", &pane, &command, "Enter"]);
-        for _ in 0..30 {
-            if record().contains(&format!("\"event\":\"{event}\"")) {
-                return;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        panic!("hook {event} left no record: {}", record());
+        assert!(
+            eventually(|| record().contains(&format!("\"event\":\"{event}\""))),
+            "hook {event} left no record: {}",
+            record()
+        );
     };
     hook("UserPromptSubmit", true);
     assert!(
@@ -617,8 +624,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
     );
     assert_eq!(activity(), r#"{"@0":"plain","@1":"working"}"#);
     let session_dots = || {
-        let output = server.tmm_with(&["list"], "", &scan);
-        let rows = String::from_utf8(output.stdout).unwrap();
+        let rows = server.tmm(&["list"]);
         rows.lines()
             .next()
             .unwrap()
@@ -641,7 +647,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
     );
 
     server.tmux(&["send-keys", "-t", &pane, "esc to interrupt", "Enter"]);
-    thread::sleep(Duration::from_millis(300));
+    assert!(eventually(|| screen(&pane).contains("esc to interrupt")));
     hook("PermissionRequest", false);
     assert_eq!(
         activity(),

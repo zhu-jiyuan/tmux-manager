@@ -11,7 +11,6 @@
 pub mod claude;
 pub mod codex;
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -25,11 +24,8 @@ use crate::agent::State;
 /// Every harness tmm knows, in the order they are tried.
 pub const ALL: &[&dyn Harness] = &[&claude::Claude, &codex::Codex];
 
-/// The record slot every harness has; `@tmm-agent` on the pane.
-pub const MAIN: &str = "main";
-
 /// Interpreters a harness may run under; their name alone says nothing.
-pub const INTERPRETERS: &[&str] = &["node", "bun"];
+const INTERPRETERS: &[&str] = &["node", "bun"];
 
 /// The harness `tmm hook <name>` was called for.
 pub fn by_name(name: &str) -> Option<&'static dyn Harness> {
@@ -41,11 +37,6 @@ pub fn detect(command: &str) -> Option<&'static dyn Harness> {
     ALL.iter().copied().find(|harness| harness.runs(command))
 }
 
-/// Whether a pane's foreground command may be, or may be running, any harness.
-pub fn suspect(command: &str) -> bool {
-    ALL.iter().any(|harness| harness.suspect(command))
-}
-
 pub trait Harness {
     /// The name on the command line (`tmm hook <name>`) and in records.
     fn name(&self) -> &'static str;
@@ -54,17 +45,6 @@ pub trait Harness {
     /// by the executable, never by prose in the arguments.
     fn runs(&self, command: &str) -> bool;
 
-    /// Whether a pane's foreground command name may be, or may be running,
-    /// the harness: the cheap filter deciding which panes get a `ps`. Prefix
-    /// matches, because the kernel truncates command names.
-    fn suspect(&self, command: &str) -> bool;
-
-    /// The record slots this harness's hooks write. Each slot is one pane
-    /// option, written by one kind of hook, so writers never race.
-    fn slots(&self) -> &'static [&'static str] {
-        &[MAIN]
-    }
-
     /// Register `command` as this harness's hook and say what changed.
     fn install(&self, command: &str) -> Result<()>;
 
@@ -72,9 +52,21 @@ pub trait Harness {
     /// the harness passed on stdin. `None` when it says nothing about activity.
     fn hook(&self, event: Option<&str>, stdin: &str) -> Option<Update>;
 
-    /// The pane's state from this harness's live records and, when they do
-    /// not settle it, the screen. `screen` captures once, on first use.
-    fn pane_state(&self, records: &Records, screen: &dyn Fn() -> String) -> State;
+    /// What this harness's screen says when no record settles its state.
+    fn hints(&self) -> &'static Hints;
+
+    /// The pane's state from this harness's live record and, when it does
+    /// not settle it, the screen. `screen` captures once, on first use. Both
+    /// harnesses so far name their permission hook `PermissionRequest`; one
+    /// that does not overrides this.
+    fn pane_state(&self, record: Option<&Record>, screen: &dyn Fn() -> String) -> State {
+        match record {
+            // A permission hook fires before approval, not when the tool
+            // starts. Only a visible busy hint proves the agent has resumed.
+            Some(record) if record.event != "PermissionRequest" => record.state,
+            _ => self.hints().read(&screen()),
+        }
+    }
 }
 
 /// What a hook stores on the pane. `pid` and `started` tie the record to one
@@ -92,13 +84,9 @@ pub struct Record {
 
 /// What a hook event asks the collector to record.
 pub struct Update {
-    pub slot: &'static str,
     pub state: State,
     pub event: String,
 }
-
-/// The records of one harness that describe a process still running, by slot.
-pub type Records = HashMap<&'static str, Record>;
 
 /// A command line as `ps` prints it, split the way harnesses judge it.
 pub struct CommandLine<'a> {
@@ -196,21 +184,6 @@ impl Hints {
     }
 }
 
-/// One live record in the main slot, for the harness tests.
-#[cfg(test)]
-pub(crate) fn one_record(harness: &str, state: State, event: &str) -> Records {
-    Records::from([(
-        MAIN,
-        Record {
-            state,
-            pid: 1,
-            started: "x".into(),
-            harness: harness.into(),
-            event: event.into(),
-        },
-    )])
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -230,14 +203,45 @@ mod tests {
     fn names_are_unique() {
         let names: HashSet<&str> = ALL.iter().map(|harness| harness.name()).collect();
         assert_eq!(names.len(), ALL.len(), "harness names collide: {names:?}");
+        assert!(by_name("nope").is_none());
+    }
+
+    #[test]
+    fn records_settle_the_state_unless_a_permission_is_pending() {
+        let record = |state, event: &str| Record {
+            state,
+            pid: 1,
+            started: "x".into(),
+            harness: "test".into(),
+            event: event.into(),
+        };
+        let busy = || "Working (esc to interrupt)".to_string();
+        let idle = || "$ ".to_string();
         for harness in ALL {
-            assert!(
-                harness.slots().contains(&MAIN),
-                "{} has no main slot",
-                harness.name()
+            let name = harness.name();
+            let stop = record(State::Waiting, "Stop");
+            let permission = record(State::Waiting, "PermissionRequest");
+            assert_eq!(
+                harness.pane_state(Some(&stop), &busy),
+                State::Waiting,
+                "{name}: a record wins over the screen"
+            );
+            assert_eq!(
+                harness.pane_state(Some(&permission), &busy),
+                State::Working,
+                "{name}: a busy hint after a permission hook means it resumed"
+            );
+            assert_eq!(
+                harness.pane_state(Some(&permission), &idle),
+                State::Waiting,
+                "{name}: no busy hint, still waiting for approval"
+            );
+            assert_eq!(
+                harness.pane_state(None, &busy),
+                State::Working,
+                "{name}: no record, the screen decides"
             );
         }
-        assert!(by_name("nope").is_none());
     }
 
     #[test]

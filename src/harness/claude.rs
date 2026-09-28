@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use super::{CommandLine, Harness, Hints, Hook, INTERPRETERS, MAIN, Records, Update};
+use super::{CommandLine, Harness, Hints, Hook, Update};
 use crate::agent::State;
 use crate::install;
 
@@ -40,13 +40,11 @@ impl Harness for Claude {
 
     fn runs(&self, command: &str) -> bool {
         let command = CommandLine::parse(command);
+        // Started as `claude`; the native installer's binary, named after its
+        // version under ~/.local/share/claude/versions/; or the npm package.
         command.executable == "claude"
             || command.path.contains("/claude/versions/")
             || command.runs_script("/@anthropic-ai/claude-code/")
-    }
-
-    fn suspect(&self, command: &str) -> bool {
-        command.starts_with("claude") || INTERPRETERS.contains(&command)
     }
 
     fn install(&self, command: &str) -> Result<()> {
@@ -81,26 +79,19 @@ impl Harness for Claude {
             _ => return None,
         };
         Some(Update {
-            slot: MAIN,
             state,
             event: hook.event,
         })
     }
 
-    fn pane_state(&self, records: &Records, screen: &dyn Fn() -> String) -> State {
-        match records.get(MAIN) {
-            // A permission hook fires before approval, not when the tool
-            // starts. Only a visible busy hint proves the agent has resumed.
-            Some(record) if record.event != "PermissionRequest" => record.state,
-            _ => HINTS.read(&screen()),
-        }
+    fn hints(&self) -> &'static Hints {
+        &HINTS
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::one_record;
 
     fn state(event: Option<&str>, stdin: &str) -> Option<State> {
         Claude.hook(event, stdin).map(|update| update.state)
@@ -112,7 +103,6 @@ mod tests {
         assert!(Claude.runs("claude --resume"));
         assert!(Claude.runs("node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"));
         assert!(!Claude.runs("node /usr/lib/node_modules/@openai/codex/bin/codex.js"));
-        assert!(Claude.suspect("claude") && Claude.suspect("node") && !Claude.suspect("zsh"));
     }
 
     #[test]
@@ -166,33 +156,7 @@ mod tests {
             "a subagent's hooks say nothing about the parent"
         );
         let update = Claude.hook(Some("Stop"), "").unwrap();
-        assert_eq!((update.slot, update.event.as_str()), (MAIN, "Stop"));
-    }
-
-    #[test]
-    fn records_settle_the_state_unless_a_permission_is_pending() {
-        let record = |state, event| one_record("claude", state, event);
-        let busy = || "Working (esc to interrupt)".to_string();
-        assert_eq!(
-            Claude.pane_state(&record(State::Waiting, "Stop"), &busy),
-            State::Waiting,
-            "a record wins over the screen"
-        );
-        assert_eq!(
-            Claude.pane_state(&record(State::Waiting, "PermissionRequest"), &busy),
-            State::Working,
-            "a busy hint after a permission hook means it resumed"
-        );
-        assert_eq!(
-            Claude.pane_state(&record(State::Waiting, "PermissionRequest"), &|| "❯ "
-                .into()),
-            State::Waiting
-        );
-        assert_eq!(
-            Claude.pane_state(&Records::new(), &busy),
-            State::Working,
-            "no record: the screen decides"
-        );
+        assert_eq!(update.event, "Stop");
     }
 
     #[test]
