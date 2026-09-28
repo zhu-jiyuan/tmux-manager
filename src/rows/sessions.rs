@@ -1,5 +1,6 @@
-//! Sessions mode and windows mode: a row per session, starred ones first,
-//! and in windows mode each session's windows beneath it as a tree.
+//! Sessions mode and windows mode: a row per session, and in windows mode
+//! each session's windows beneath it as a tree. `build` puts starred
+//! sessions first.
 //!
 //! Window rows have no session name of their own behind the dim `├`/`└`
 //! guides. That reads well until a filter hides the header, and fzf cannot
@@ -17,15 +18,9 @@ pub(super) fn rows(groups: &[Group], data: &Data, windows: bool) -> Vec<Row> {
         .map(|w| w.window_index.to_string().len())
         .max()
         .unwrap_or(1);
-    let mut starred = Vec::new();
-    let mut rest = Vec::new();
+    let mut rows = Vec::new();
     for group in groups {
         let session = group.session;
-        let out = if data.favorites.contains(&session.session_name) {
-            &mut starred
-        } else {
-            &mut rest
-        };
         // In windows mode the session row is the header of the rows below.
         let name = if windows {
             bold(&session.session_name)
@@ -37,13 +32,12 @@ pub(super) fn rows(groups: &[Group], data: &Data, windows: bool) -> Vec<Row> {
             count(group.windows.len(), "window"),
             group.attached()
         );
-        out.push(group.row(data, &name, &badge));
+        rows.push(group.row(data, &name, &badge));
         if windows {
-            out.extend(window_rows(group, data, index_width));
+            rows.extend(window_rows(group, data, index_width));
         }
     }
-    starred.extend(rest);
-    starred
+    rows
 }
 
 fn window_rows(group: &Group, data: &Data, index_width: usize) -> Vec<Row> {

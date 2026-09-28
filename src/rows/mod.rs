@@ -91,11 +91,16 @@ pub fn fetch(mode: Mode) -> Result<Data> {
 /// The rows of a mode, in display order.
 pub fn build(data: &Data, mode: Mode) -> Vec<Row> {
     let groups = Group::all(&data.panes);
-    match mode {
+    let mut rows = match mode {
         Mode::Sessions => sessions::rows(&groups, data, false),
         Mode::Windows => sessions::rows(&groups, data, true),
         Mode::Projects => projects::rows(&groups, data),
-    }
+    };
+    // Starred first, in every mode. The sort is stable, so each mode's own
+    // order holds on either side, and window rows, which carry their
+    // session's name, stay under their session.
+    rows.sort_by_key(|row| !data.favorites.contains(&row.name));
+    rows
 }
 
 /// The rows of a mode as fzf reads them: one line each, newline-terminated.
@@ -370,13 +375,15 @@ mod tests {
     }
 
     #[test]
-    fn projects_match_sessions_by_directory_then_by_unclaimed_name() {
+    fn projects_match_sessions_by_start_directory() {
         let mut d = data(vec![
             pane(("$0", "api"), ("@0", 0, "zsh")),
             pane(("$1", "zed"), ("@1", 0, "zsh")),
         ]);
         d.session_dirs.insert("$0".into(), "/p/nested/api".into());
+        d.session_dirs.insert("$1".into(), "/elsewhere/zed".into());
         d.favorites.insert("tools".into());
+        d.favorites.insert("zed".into());
         for path in ["/p/api", "/p/nested/api", "/p/tools", "/p/zed"] {
             let path = PathBuf::from(path);
             d.projects.push(Project {
@@ -404,14 +411,20 @@ mod tests {
                     "/p/nested · 1 window".to_string()
                 ),
                 (
-                    "$1".to_string(),
-                    "  zed".to_string(),
-                    "/p · 1 window".to_string()
+                    "/p/api".to_string(),
+                    "  api-p".to_string(),
+                    "/p".to_string()
                 ),
-                ("/p/api".to_string(), "  api".to_string(), "/p".to_string()),
+                (
+                    "/p/zed".to_string(),
+                    "  zed-p".to_string(),
+                    "/p".to_string()
+                ),
             ],
-            "starred, then open (the session started in nested/api claims it, \
-             so the namesake stays unopened), then the rest"
+            "starred, then open, then the rest. A session named like a project \
+             but started elsewhere (api, zed) does not claim it, as in \
+             projects::open, so the project is named after the session Enter \
+             will make, and the star on the session zed stays with it"
         );
     }
 

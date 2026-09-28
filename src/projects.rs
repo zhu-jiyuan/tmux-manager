@@ -16,7 +16,9 @@ use crate::{paths, tmux};
 pub struct Project {
     /// Canonical, so it compares with a session's start directory.
     pub path: PathBuf,
-    /// What its session is called.
+    /// The directory's name as tmux allows it in a session name: the list
+    /// sorts by it, and a new session starts from it (see `free_name`).
+    /// The session itself may be called something else, or renamed.
     pub name: String,
 }
 
@@ -43,6 +45,25 @@ pub fn session_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().replace(['.', ':'], "_"))
         .unwrap_or_else(|| "root".to_string())
+}
+
+/// The name a new session for `path` gets: the directory's name, or, when
+/// a session elsewhere has taken it, the parent's appended (then a number).
+/// The listing names a project that is not open yet the same way, so its
+/// star is the star of the session Enter will make.
+pub fn free_name(path: &Path, taken: impl Fn(&str) -> bool) -> String {
+    let base = session_name(path);
+    if !taken(&base) {
+        return base;
+    }
+    let parent = path.parent().map(session_name).unwrap_or_default();
+    let mut name = format!("{base}-{parent}");
+    let mut n = 2;
+    while taken(&name) {
+        name = format!("{base}-{parent}-{n}");
+        n += 1;
+    }
+    name
 }
 
 /// The option's entries: a path, optionally with `:depth` (default 1).
@@ -132,19 +153,9 @@ pub fn open(dir: &Path) -> Result<String> {
     if let Some((id, _, _)) = sessions.iter().find(|(_, _, start)| started_here(start)) {
         return Ok(id.clone());
     }
-    let taken = |name: &str| sessions.iter().any(|(_, existing, _)| existing == name);
-    let base = session_name(&path);
-    let mut name = base.clone();
-    if taken(&name) {
-        // A namesake started elsewhere: say where this one lives.
-        let parent = path.parent().map(session_name).unwrap_or_default();
-        name = format!("{base}-{parent}");
-        let mut n = 2;
-        while taken(&name) {
-            name = format!("{base}-{parent}-{n}");
-            n += 1;
-        }
-    }
+    let name = free_name(&path, |name| {
+        sessions.iter().any(|(_, existing, _)| existing == name)
+    });
     tmux::run(&[
         "new-session",
         "-d",
@@ -167,6 +178,18 @@ mod tests {
         assert_eq!(session_name(Path::new("/x/my.app")), "my_app");
         assert_eq!(session_name(Path::new("/x/a:b")), "a_b");
         assert_eq!(session_name(Path::new("/")), "root");
+    }
+
+    #[test]
+    fn a_taken_name_says_where_the_project_lives() {
+        let path = Path::new("/p/work/api");
+        assert_eq!(free_name(path, |_| false), "api");
+        assert_eq!(free_name(path, |name| name == "api"), "api-work");
+        assert_eq!(
+            free_name(path, |name| ["api", "api-work", "api-work-2"]
+                .contains(&name)),
+            "api-work-3"
+        );
     }
 
     #[test]
