@@ -613,7 +613,9 @@ fn agent_activity_from_hooks_and_from_the_screen() {
     // names its command after what the system says runs: `bash` on macOS,
     // where /bin/sh is bash, `claude` on Linux. Neither is `sh`, so with that
     // as the default shell the pre-filter never takes it for a pane at its
-    // prompt, and the test goes through the filter as real panes do.
+    // prompt, and the test goes through the filter as real panes do. `exec`,
+    // because dash, Linux's /bin/sh, forks for `sh -c <command>` where bash
+    // execs it, and the pane's pid must be the agent's.
     let fake = server.state.join("claude");
     std::os::unix::fs::symlink("/bin/sh", &fake).unwrap();
     server.tmux(&["set", "-g", "default-shell", "/bin/sh"]);
@@ -624,7 +626,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         "alpha:",
         "-n",
         "agent",
-        fake.to_str().unwrap(),
+        &format!("exec {}", fake.to_str().unwrap()),
     ]);
     let screen = |target: &str| server.tmux(&["capture-pane", "-p", "-t", target]);
     assert!(
