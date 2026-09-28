@@ -2,7 +2,8 @@
 //!
 //! Persistent state (favorites) lives in the state directory. Per-popup
 //! scratch files (the row snapshot fzf is showing and its sidecars, see
-//! `popup`) live in a `run` subdirectory and go when the popup closes.
+//! `popup`) live in a `run` subdirectory, named after the pid of the
+//! `switch` that owns them, and go when it does.
 
 use std::path::{Path, PathBuf};
 use std::{env, fs, process};
