@@ -24,7 +24,13 @@ use crate::state::Switcher;
 use crate::switch::{FILTER_FIELDS, LEGEND, TREE_FIELDS};
 use crate::{fzf, tmux};
 
-fn reload() -> String {
+/// What is typed on fzf's input line; nothing, run from a shell.
+fn query() -> String {
+    env::var("FZF_QUERY").unwrap_or_default()
+}
+
+/// Reload the rows from `tmm list`.
+pub(crate) fn reload() -> String {
     format!("reload-sync({} list)", fzf::me())
 }
 
@@ -72,7 +78,7 @@ pub enum ModeAction {
 /// `tab`: move to the next mode, rename the prompt, reload the rows. An
 /// open prompt is cancelled, since its question was about the old list.
 pub fn mode(action: ModeAction) -> Result<()> {
-    let popup = Popup::current()?;
+    let popup = Popup::current();
     let mode = match action {
         ModeAction::Sessions => Mode::Sessions,
         ModeAction::Windows => Mode::Windows,
@@ -90,7 +96,7 @@ pub fn mode(action: ModeAction) -> Result<()> {
 
 /// `ctrl-/`: an empty footer hides the legend.
 pub fn help() -> Result<()> {
-    let popup = Popup::current()?;
+    let popup = Popup::current();
     if popup.has(Sidecar::Help) {
         popup.remove(Sidecar::Help)?;
         println!("{LEGEND}");
@@ -105,10 +111,10 @@ pub fn help() -> Result<()> {
 /// to the breadcrumbs. An open prompt borrows the query line; the filter it
 /// saved is the one that counts then.
 pub fn with_nth() -> Result<()> {
-    let popup = Popup::current()?;
+    let popup = Popup::current();
     let query = match pending(&popup)? {
         Some(pending) => pending.query,
-        None => env::var("FZF_QUERY").unwrap_or_default(),
+        None => query(),
     };
     let fields = if query.is_empty() {
         TREE_FIELDS
@@ -277,7 +283,7 @@ pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
     let Some(target) = id.target() else {
         return Ok(());
     };
-    let popup = Popup::current()?;
+    let popup = Popup::current();
     let [session_id, session, index, window] = describe(target)?;
     let (question, header) = match kind {
         PromptKind::Rename if id.is_window() => (
@@ -308,7 +314,7 @@ pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
     let old = arg(question.old());
     let pending = Pending {
         question,
-        query: env::var("FZF_QUERY")?,
+        query: query(),
     };
     popup.write_json(Sidecar::Prompt, &pending)?;
     println!(
@@ -351,12 +357,12 @@ fn apply(question: &Question, answer: &str) -> Result<bool> {
 
 /// Enter: answer the open prompt, or accept the row.
 pub fn enter() -> Result<()> {
-    let popup = Popup::current()?;
+    let popup = Popup::current();
     let Some(pending) = take_pending(&popup)? else {
         println!("accept");
         return Ok(());
     };
-    let answer = env::var("FZF_QUERY")?;
+    let answer = query();
     let restore = restore(&popup, &pending.query);
     match apply(&pending.question, answer.trim()) {
         Ok(true) => println!("{restore}+{}", reload()),
@@ -368,7 +374,7 @@ pub fn enter() -> Result<()> {
 
 /// Esc: cancel the open prompt, or close the popup.
 pub fn escape() -> Result<()> {
-    let popup = Popup::current()?;
+    let popup = Popup::current();
     match take_pending(&popup)? {
         Some(pending) => println!("{}", restore(&popup, &pending.query)),
         None => println!("abort"),

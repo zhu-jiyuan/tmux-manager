@@ -4,7 +4,10 @@
 //! One binary, many small subcommands. `switch` opens the popup, and every
 //! fzf key binding calls back into this same binary. Each call is a fresh
 //! process, so startup cost and the number of `tmux` invocations per call are
-//! what decide how the popup feels.
+//! what decide how the popup feels. `switch`, `open`, `activity`, `hook` and
+//! `install-hooks` are entry points; the rest are what the keys run, and each
+//! also runs from a shell, as the first key of a popup that ends with it (see
+//! `popup`).
 
 mod actions;
 mod agent;
@@ -23,7 +26,7 @@ mod tmux;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -37,26 +40,49 @@ struct Cli {
     command: Command,
 }
 
+/// `--windows` or `--projects`. Neither means sessions for `switch`, and for
+/// `list` the popup's mode, which from a shell is sessions.
+#[derive(Args)]
+struct ModeFlags {
+    /// Windows mode
+    #[arg(long, conflicts_with = "projects")]
+    windows: bool,
+    /// Projects mode
+    #[arg(long)]
+    projects: bool,
+}
+
+impl ModeFlags {
+    fn mode(&self) -> Option<popup::Mode> {
+        if self.projects {
+            Some(popup::Mode::Projects)
+        } else if self.windows {
+            Some(popup::Mode::Windows)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Open the popup for a tmux client (prefix + s, prefix + w, prefix + f)
     Switch {
         client: String,
-        /// Start in windows mode
-        #[arg(long, conflicts_with = "projects")]
-        windows: bool,
-        /// Start in projects mode
-        #[arg(long)]
-        projects: bool,
+        #[command(flatten)]
+        mode: ModeFlags,
     },
     /// Move the open popup to another mode: sessions, windows, projects (tab)
     Mode { action: actions::ModeAction },
     /// Find or create the session for a project directory; prints its id
     Open { path: PathBuf },
-    /// Print the rows; fzf reloads from this
-    List,
+    /// Print the rows; fzf reloads from this, and it runs from any shell too
+    List {
+        #[command(flatten)]
+        mode: ModeFlags,
+    },
     /// Reload fzf when the rows changed (runs in the background every second)
-    Refresh { snapshot: PathBuf },
+    Refresh,
     /// Star, unstar or toggle a session (ctrl-s)
     Favorite {
         mode: actions::FavoriteMode,
@@ -99,25 +125,14 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Switch {
-            client,
-            windows,
-            projects,
-        } => {
-            let mode = if projects {
-                popup::Mode::Projects
-            } else if windows {
-                popup::Mode::Windows
-            } else {
-                popup::Mode::Sessions
-            };
-            switch::run(&client, mode);
+        Command::Switch { client, mode } => {
+            switch::run(&client, mode.mode().unwrap_or(popup::Mode::Sessions));
             Ok(())
         }
         Command::Mode { action } => actions::mode(action),
         Command::Open { path } => projects::open(&path).map(|id| println!("{id}")),
-        Command::List => switch::list(),
-        Command::Refresh { snapshot } => switch::refresh(&snapshot),
+        Command::List { mode } => switch::list(mode.mode()),
+        Command::Refresh => switch::refresh(),
         Command::Favorite { mode, name } => actions::favorite(mode, &name),
         Command::Preview { row } => preview::run(&row),
         Command::PreviewNext { row } => preview::next(&row),

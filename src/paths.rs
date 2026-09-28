@@ -35,12 +35,13 @@ pub fn switcher_file() -> PathBuf {
     state_dir().join("switcher.json")
 }
 
-/// The row snapshot of the popup that invoked us. `switch` exports it so the
-/// helper commands fzf runs can share small bits of state through sidecars.
-pub fn snapshot() -> Result<PathBuf> {
+/// The row snapshot of the popup whose fzf runs us. `switch` exports it so
+/// the commands fzf runs share small bits of state through sidecars. `None`
+/// from a shell (an empty value counts as unset): see `Popup::current`.
+pub fn snapshot() -> Option<PathBuf> {
     env::var_os("TMM_SNAPSHOT")
+        .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .context("TMM_SNAPSHOT is not set; this command runs inside the popup")
 }
 
 /// Write via a temporary file and rename, so readers never see a half-written file.

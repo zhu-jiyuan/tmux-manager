@@ -86,20 +86,25 @@ pub fn next(row: &str) -> Result<()> {
     let Some(RowId::Session(session)) = RowId::parse(row) else {
         return Ok(());
     };
-    let popup = Popup::current()?;
-    let windows = windows_of(&session)?;
-    let mut choices = choices(&popup)?;
-    let Some(now) = current(&session, &windows, &choices) else {
+    advance(&Popup::current(), &session)
+}
+
+/// Move `session`'s preview in `popup` to its next window, wrapping.
+fn advance(popup: &Popup, session: &str) -> Result<()> {
+    let windows = windows_of(session)?;
+    let mut choices = choices(popup)?;
+    let Some(now) = current(session, &windows, &choices) else {
         return Ok(());
     };
     let position = windows.iter().position(|(id, _)| *id == now).unwrap_or(0);
     let following = windows[(position + 1) % windows.len()].0.clone();
-    choices.insert(session, following);
+    choices.insert(session.to_string(), following);
     popup.write_json(Sidecar::Preview, &choices)
 }
 
 /// One frame: a bold title line, a blank line, then the captured screen,
-/// clipped to the viewport so fzf shows no scroll indicator.
+/// clipped to the viewport so fzf shows no scroll indicator. A project with
+/// no session previews its directory instead.
 fn render(popup: &Popup, id: &RowId, columns: usize, lines: usize) -> String {
     if let RowId::Project(path) = id {
         return directory(path, columns, lines);
@@ -191,14 +196,18 @@ pub fn run(row: &str) -> Result<()> {
     let Some(id) = RowId::parse(row) else {
         return Ok(());
     };
-    let popup = Popup::current()?;
-    let size = |name: &str| -> Result<usize> { Ok(env::var(name)?.parse()?) };
-    let frame = render(
-        &popup,
-        &id,
-        size("FZF_PREVIEW_COLUMNS")?,
-        size("FZF_PREVIEW_LINES")?,
-    );
+    let popup = Popup::current();
+    // fzf says how big its preview window is; a shell gets the terminal's size.
+    let (columns, lines) = match (
+        env::var("FZF_PREVIEW_COLUMNS"),
+        env::var("FZF_PREVIEW_LINES"),
+    ) {
+        (Ok(columns), Ok(lines)) => (columns.parse()?, lines.parse()?),
+        _ => terminal::size().map_or((80, 24), |(columns, lines)| {
+            (usize::from(columns), usize::from(lines))
+        }),
+    };
+    let frame = render(&popup, &id, columns, lines);
     io::stdout().write_all(frame.as_bytes())?;
     Ok(())
 }
@@ -236,7 +245,7 @@ pub fn full(row: &str) -> Result<()> {
     let Some(id) = RowId::parse(row) else {
         return Ok(());
     };
-    let popup = Popup::current()?;
+    let popup = Popup::current();
     let mut terminal = RawTerminal::enter()?;
     let back = loop {
         let (columns, lines) = terminal::size()?;
@@ -255,7 +264,12 @@ pub fn full(row: &str) -> Result<()> {
         match (key.code, key.modifiers) {
             // Only forward: ctrl-h reaches us as Backspace through tmux, so a
             // single wrapping key is the honest option.
-            (KeyCode::Char('l'), _) => next(row)?,
+            // Through this popup, so the choice holds in one kept in memory.
+            (KeyCode::Char('l'), _) => {
+                if let RowId::Session(session) = &id {
+                    advance(&popup, session)?;
+                }
+            }
             (KeyCode::Char('c'), KeyModifiers::CONTROL) | (KeyCode::Esc, _) => break "abort",
             (KeyCode::Enter, _) => break "accept",
             (KeyCode::Char('v'), KeyModifiers::CONTROL) => break "hide-preview",
@@ -269,7 +283,7 @@ pub fn full(row: &str) -> Result<()> {
 
 /// After the full view: replay the action it left behind.
 pub fn view_return() -> Result<()> {
-    let popup = Popup::current()?;
+    let popup = Popup::current();
     println!("{}", popup.take(Sidecar::View)?.unwrap_or_default());
     Ok(())
 }

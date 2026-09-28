@@ -10,8 +10,14 @@
 //! Every piece of this state has an owner and goes with it. A popup's files
 //! belong to its `switch` process, whose pid names them: `cleanup` removes
 //! them when it exits, and the next popup's [`Popup::create`] when it was
-//! killed.
+//! killed. Run from a shell, with no `TMM_SNAPSHOT`, a subcommand is the
+//! first key of a popup of its own that lives in memory as long as the
+//! process: it starts empty, and nothing reaches the disk. To drive several
+//! keys against one popup (prompt, then enter), name a snapshot you own in
+//! `TMM_SNAPSHOT`, as the integration tests do.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -94,19 +100,40 @@ impl Sidecar {
     }
 }
 
+/// Where a popup keeps its snapshot and sidecars.
+enum Store {
+    /// Files named after the snapshot: a popup `switch` opened, or one whose
+    /// snapshot the caller named in `TMM_SNAPSHOT`, and so owns.
+    Files(PathBuf),
+    /// Sidecars by extension, in this process's memory: a run from a shell.
+    /// It has no snapshot, so no rows on show.
+    Memory(RefCell<BTreeMap<&'static str, String>>),
+}
+
 pub struct Popup {
-    snapshot: PathBuf,
+    store: Store,
 }
 
 impl Popup {
-    /// The popup this subcommand runs inside, from `TMM_SNAPSHOT`.
-    pub fn current() -> Result<Popup> {
-        Ok(Popup::at(paths::snapshot()?))
+    /// The popup whose fzf runs us, from `TMM_SNAPSHOT`; from a shell, a
+    /// fresh one that lives as long as this process and never touches the
+    /// disk.
+    pub fn current() -> Popup {
+        match paths::snapshot() {
+            Some(snapshot) => Popup::at(snapshot),
+            None => Popup::memory(),
+        }
     }
 
-    pub fn at(snapshot: impl Into<PathBuf>) -> Popup {
+    fn at(snapshot: impl Into<PathBuf>) -> Popup {
         Popup {
-            snapshot: snapshot.into(),
+            store: Store::Files(snapshot.into()),
+        }
+    }
+
+    fn memory() -> Popup {
+        Popup {
+            store: Store::Memory(RefCell::default()),
         }
     }
 
@@ -119,44 +146,69 @@ impl Popup {
         Ok(Popup::at(run.join(format!("switch-{me}.txt"))))
     }
 
-    pub fn snapshot(&self) -> &Path {
-        &self.snapshot
+    /// The snapshot fzf reads; `None` for a popup in memory, which has none.
+    pub fn snapshot(&self) -> Option<&Path> {
+        match &self.store {
+            Store::Files(snapshot) => Some(snapshot),
+            Store::Memory(_) => None,
+        }
     }
 
+    /// Whether rows are on show: never for a popup in memory.
     pub fn exists(&self) -> bool {
-        self.snapshot.exists()
+        self.snapshot().is_some_and(Path::exists)
     }
 
     pub fn read_snapshot(&self) -> Result<String> {
-        fs::read_to_string(&self.snapshot)
-            .with_context(|| format!("reading {}", self.snapshot.display()))
+        let snapshot = self.snapshot().context("no rows on show")?;
+        fs::read_to_string(snapshot).with_context(|| format!("reading {}", snapshot.display()))
     }
 
     pub fn write_snapshot(&self, text: &str) -> Result<()> {
-        paths::write_atomic(&self.snapshot, text)
+        paths::write_atomic(self.snapshot().context("no rows on show")?, text)
     }
 
-    fn path(&self, sidecar: Sidecar) -> PathBuf {
-        self.snapshot.with_extension(sidecar.extension())
+    fn path(snapshot: &Path, sidecar: Sidecar) -> PathBuf {
+        snapshot.with_extension(sidecar.extension())
     }
 
     pub fn has(&self, sidecar: Sidecar) -> bool {
-        self.path(sidecar).exists()
+        match &self.store {
+            Store::Files(snapshot) => Popup::path(snapshot, sidecar).exists(),
+            Store::Memory(memory) => memory.borrow().contains_key(sidecar.extension()),
+        }
     }
 
     pub fn read(&self, sidecar: Sidecar) -> Option<String> {
-        fs::read_to_string(self.path(sidecar)).ok()
+        match &self.store {
+            Store::Files(snapshot) => fs::read_to_string(Popup::path(snapshot, sidecar)).ok(),
+            Store::Memory(memory) => memory.borrow().get(sidecar.extension()).cloned(),
+        }
     }
 
     pub fn write(&self, sidecar: Sidecar, text: &str) -> Result<()> {
-        paths::write_atomic(&self.path(sidecar), text)
+        match &self.store {
+            Store::Files(snapshot) => paths::write_atomic(&Popup::path(snapshot, sidecar), text),
+            Store::Memory(memory) => {
+                memory
+                    .borrow_mut()
+                    .insert(sidecar.extension(), text.to_string());
+                Ok(())
+            }
+        }
     }
 
     /// Gone afterwards, whether or not it was there.
     pub fn remove(&self, sidecar: Sidecar) -> Result<()> {
-        match fs::remove_file(self.path(sidecar)) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
-            _ => Ok(()),
+        match &self.store {
+            Store::Files(snapshot) => match fs::remove_file(Popup::path(snapshot, sidecar)) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
+                _ => Ok(()),
+            },
+            Store::Memory(memory) => {
+                memory.borrow_mut().remove(sidecar.extension());
+                Ok(())
+            }
         }
     }
 
@@ -173,7 +225,12 @@ impl Popup {
         self.read(sidecar)
             .map(|text| serde_json::from_str(&text))
             .transpose()
-            .with_context(|| format!("parsing {}", self.path(sidecar).display()))
+            .with_context(|| match &self.store {
+                Store::Files(snapshot) => {
+                    format!("parsing {}", Popup::path(snapshot, sidecar).display())
+                }
+                Store::Memory(_) => format!("parsing the {} sidecar", sidecar.extension()),
+            })
     }
 
     pub fn write_json<T: Serialize>(&self, sidecar: Sidecar, value: &T) -> Result<()> {
@@ -195,9 +252,13 @@ impl Popup {
     }
 
     /// Everything this popup left on disk: every file named after the
-    /// snapshot (`switch-<pid>.*`), so a new sidecar needs no list here.
+    /// snapshot (`switch-<pid>.*`), so a new sidecar needs no list here. A
+    /// popup in memory has nothing there.
     pub fn cleanup(&self) {
-        let (Some(dir), Some(stem)) = (self.snapshot.parent(), self.snapshot.file_stem()) else {
+        let Some(snapshot) = self.snapshot() else {
+            return;
+        };
+        let (Some(dir), Some(stem)) = (snapshot.parent(), snapshot.file_stem()) else {
             return;
         };
         let prefix = format!("{}.", stem.to_string_lossy());
@@ -264,6 +325,28 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn a_popup_in_memory_keeps_state_for_its_process_only() {
+        let popup = Popup::memory();
+        assert!(popup.snapshot().is_none() && !popup.exists());
+        assert_eq!(popup.mode(), Mode::Sessions, "it starts empty");
+        popup.set_mode(Mode::Projects).unwrap();
+        assert_eq!(
+            popup.mode(),
+            Mode::Projects,
+            "read back in the same process"
+        );
+        popup.write(Sidecar::View, "accept").unwrap();
+        assert_eq!(
+            popup.take(Sidecar::View).unwrap().as_deref(),
+            Some("accept")
+        );
+        assert!(!popup.has(Sidecar::View), "taken once");
+        assert!(popup.write_snapshot("rows").is_err(), "no rows on show");
+        popup.cleanup();
+        assert!(!Popup::memory().has(Sidecar::Mode), "another starts empty");
     }
 
     #[test]

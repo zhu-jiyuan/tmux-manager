@@ -24,7 +24,7 @@ use anyhow::{Context, Result, bail};
 use crate::popup::{Mode, Popup};
 use crate::rows::{self, RowId};
 use crate::state::Switcher;
-use crate::{fzf, projects, tmux};
+use crate::{actions, fzf, projects, tmux};
 
 /// Four short lines: the footer only spans the list half of the popup.
 pub(crate) const LEGEND: &str = "ctrl-j/k move · ctrl-f/b page · tab mode\n\
@@ -48,9 +48,9 @@ fn message(client: &str, text: &str) {
 /// id, `{2}` the session name; fzf quotes them for the shell. Keys fzf
 /// already binds for editing and moving (ctrl-a/e/u/w, ctrl-j/k/n/p) are
 /// left alone.
-fn binds(me: &str, snapshot: &Path) -> Vec<String> {
+fn binds(me: &str) -> Vec<String> {
     let cmd = |tail: &str| format!("{me} {tail}");
-    let reload = format!("reload-sync({})", cmd("list"));
+    let reload = actions::reload();
     vec![
         "ctrl-f:half-page-down".to_string(),
         "ctrl-b:half-page-up".to_string(),
@@ -78,13 +78,7 @@ fn binds(me: &str, snapshot: &Path) -> Vec<String> {
         format!("change:transform-with-nth:{}", cmd("with-nth")),
         // One timer for both: redraw the preview (a short-lived process each
         // time, so fzf shows no spinner) and refresh the rows in the background.
-        format!(
-            "every(1):refresh-preview+bg-transform({})",
-            cmd(&format!(
-                "refresh {}",
-                fzf::quote(&snapshot.to_string_lossy())
-            ))
-        ),
+        format!("every(1):refresh-preview+bg-transform({})", cmd("refresh")),
     ]
 }
 
@@ -163,7 +157,7 @@ fn pick(fzf_bin: &Path, client: &str, mode: Mode, popup: &Popup) -> Result<Outpu
         "--color",
         &fzf::colours().join(","),
     ]);
-    for bind in binds(&me, popup.snapshot()) {
+    for bind in binds(&me) {
         command.args(["--bind", &bind]);
     }
     if mode == Mode::Windows {
@@ -181,7 +175,10 @@ fn pick(fzf_bin: &Path, client: &str, mode: Mode, popup: &Popup) -> Result<Outpu
     }
     command
         .env("SHELL", "/bin/sh")
-        .env("TMM_SNAPSHOT", popup.snapshot())
+        .env(
+            "TMM_SNAPSHOT",
+            popup.snapshot().context("the popup's snapshot")?,
+        )
         // The dots carry meaning; never let NO_COLOR blank them.
         .env_remove("NO_COLOR")
         .stdin(Stdio::piped())
@@ -242,12 +239,14 @@ fn choice(status: Option<i32>, query: &str, selected: Option<&str>) -> Result<Op
     }
 }
 
-/// fzf `reload` source. Also refreshes the snapshot so the background
-/// refresh compares against what fzf is really showing.
-pub fn list() -> Result<()> {
-    let popup = Popup::current()?;
-    let text = rows::text(popup.mode())?;
-    if popup.exists() {
+/// The rows of `mode`, else of the popup's current mode (sessions from a
+/// shell). fzf reloads from this with no mode given, and then the snapshot
+/// is refreshed too, so the background refresh compares against what fzf is
+/// really showing. A mode given leaves the popup's snapshot alone.
+pub fn list(mode: Option<Mode>) -> Result<()> {
+    let popup = Popup::current();
+    let text = rows::text(mode.unwrap_or_else(|| popup.mode()))?;
+    if mode.is_none() && popup.exists() {
         popup.write_snapshot(&text)?;
     }
     print!("{text}");
@@ -256,12 +255,17 @@ pub fn list() -> Result<()> {
 
 /// Background poll. Rows are only replaced when the user has paused, and
 /// only if something actually changed, so the cursor never jumps.
-pub fn refresh(snapshot: &Path) -> Result<()> {
-    let idle: u64 = env::var("FZF_IDLE_TIME_MS")?.parse()?;
-    let popup = Popup::at(snapshot);
-    if idle < 1000 || !popup.exists() {
+pub fn refresh() -> Result<()> {
+    // From a shell nobody is typing: that counts as idle.
+    let idle: u64 = match env::var("FZF_IDLE_TIME_MS") {
+        Ok(ms) => ms.parse()?,
+        Err(_) => u64::MAX,
+    };
+    let popup = Popup::current();
+    // From a shell no rows are on show, so there is nothing to refresh.
+    let Some(snapshot) = popup.snapshot().filter(|_| idle >= 1000 && popup.exists()) else {
         return Ok(());
-    }
+    };
     let settings = || -> Result<_> { Ok((Switcher::load()?, popup.mode())) };
     let before = settings()?;
     let text = rows::text(before.1)?;
