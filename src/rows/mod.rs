@@ -66,7 +66,7 @@ impl Data {
 pub fn fetch(mode: Mode) -> Result<Data> {
     let panes = tmux::panes()?;
     let states = agent::states(&panes)?;
-    let favorites = Switcher::load().favorites;
+    let favorites = Switcher::load()?.favorites;
     let mut session_dirs = HashMap::new();
     let mut projects = Vec::new();
     if mode == Mode::Projects {

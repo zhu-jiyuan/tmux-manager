@@ -17,9 +17,9 @@
 use std::env;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::popup::{Mode, Popup};
 use crate::rows::{self, RowId};
@@ -36,8 +36,12 @@ pub(crate) const LEGEND: &str = "ctrl-j/k move · ctrl-f/b page · tab mode\n\
 pub(crate) const TREE_FIELDS: &str = "3,5,6";
 pub(crate) const FILTER_FIELDS: &str = "4,5,6";
 
+/// Show `text` on the client's status line. display-message expands formats
+/// and strftime in its argument, so `#` and `%` are doubled to come out as
+/// written: fzf's own errors quote options like `--height=50%`.
 fn message(client: &str, text: &str) {
-    let _ = tmux::run(&["display-message", "-c", client, text]);
+    let text = text.replace('#', "##").replace('%', "%%");
+    let _ = tmux::run(&["display-message", "-c", client, &text]);
 }
 
 /// The key bindings, each running one `tmm` subcommand. `{1}` is the row
@@ -84,23 +88,49 @@ fn binds(me: &str, snapshot: &Path) -> Vec<String> {
     ]
 }
 
-pub fn run(client: &str, mode: Mode) -> Result<()> {
-    let Some(fzf_bin) = fzf::locate() else {
-        message(client, "tmm: fzf not found (brew install fzf)");
-        return Ok(());
-    };
-    if let Err(error) = fzf::check_version(&fzf_bin) {
-        message(client, &format!("tmm: {error}"));
-        return Ok(());
+/// `prefix + s`, `w` or `f`. The popup closes the moment tmm exits, so
+/// stderr would go unseen: a failure goes to the client's status line.
+pub fn run(client: &str, mode: Mode) {
+    if let Err(error) = open(client, mode) {
+        message(client, &format!("tmm: {error:#}"));
+    }
+}
+
+/// Run the popup and switch the client to whatever the user picked.
+fn open(client: &str, mode: Mode) -> Result<()> {
+    let fzf_bin = fzf::locate().context("fzf not found (brew install fzf)")?;
+    fzf::check_version(&fzf_bin)?;
+    let popup = Popup::create()?;
+    // Whatever happens in fzf, the popup's files go with it.
+    let output = pick(&fzf_bin, client, mode, &popup);
+    popup.cleanup();
+    let output = output?;
+    // 2 is fzf's own error, a bad option in FZF_DEFAULT_OPTS say; 1 and 130
+    // are no match and abort, which `choice` handles.
+    if output.status.code() == Some(2) {
+        bail!("fzf: {}", String::from_utf8_lossy(&output.stderr).trim());
     }
 
-    let popup = Popup::create()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let query = lines.next().unwrap_or("").trim();
+    let selected = lines.next().and_then(|line| line.split('\t').next());
+    let Some(target) = choice(output.status.code(), query, selected)? else {
+        return Ok(());
+    };
+    // A window id switches the client to its session and selects the window.
+    tmux::run(&["switch-client", "-c", client, "-t", &target])?;
+    Ok(())
+}
+
+/// Write the rows, run fzf on them, and hand back what it printed.
+fn pick(fzf_bin: &Path, client: &str, mode: Mode, popup: &Popup) -> Result<Output> {
     popup.set_mode(mode)?;
     let text = rows::text(mode)?;
     popup.write_snapshot(&text)?;
 
     let me = fzf::me();
-    let mut command = Command::new(&fzf_bin);
+    let mut command = Command::new(fzf_bin);
     command.args([
         "--ansi",
         "--reverse",
@@ -138,24 +168,15 @@ pub fn run(client: &str, mode: Mode) -> Result<()> {
     }
     if mode == Mode::Windows {
         // Query the opening client: the popup's TMUX_PANE can refer to a
-        // different window. Include the session for windows linked into several.
+        // different window.
         let clients = tmux::run_lossy(&[
             "list-clients",
             "-F",
             "#{client_name}\t#{window_id}\t#{session_name}",
         ]);
-        let prefix = format!("{client}\t");
-        if let Some((window, session)) = clients
-            .lines()
-            .find_map(|line| line.strip_prefix(&prefix))
-            .and_then(|line| line.split_once('\t'))
-            && let Some(index) = text.lines().position(|line| {
-                let mut fields = line.split('\t');
-                fields.next() == Some(window) && fields.next() == Some(session)
-            })
-        {
+        if let Some(row) = client_row(&clients, client, &text) {
             // Position once after all rows arrive; reloads keep the user's cursor.
-            command.args(["--bind", &format!("load:pos({})+unbind(load)", index + 1)]);
+            command.args(["--bind", &format!("load:pos({row})+unbind(load)")]);
         }
     }
     command
@@ -172,24 +193,23 @@ pub fn run(client: &str, mode: Mode) -> Result<()> {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes());
     }
-    let output = child.wait_with_output()?;
-    popup.cleanup();
+    Ok(child.wait_with_output()?)
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut lines = stdout.lines();
-    let query = lines.next().unwrap_or("").trim();
-    let selected = lines.next().and_then(|line| line.split('\t').next());
-    let target = match choice(output.status.code(), query, selected) {
-        Ok(Some(target)) => target,
-        Ok(None) => return Ok(()),
-        Err(error) => {
-            message(client, &format!("tmm: {error}"));
-            return Ok(());
-        }
-    };
-    // A window id switches the client to its session and selects the window.
-    tmux::run(&["switch-client", "-c", client, "-t", &target])?;
-    Ok(())
+/// The row, counted from 1, of the window `client` is looking at. `clients`
+/// is `list-clients` output as `name, window id, session name`; the session
+/// tells apart the rows of a window linked into several sessions.
+fn client_row(clients: &str, client: &str, rows: &str) -> Option<usize> {
+    let prefix = format!("{client}\t");
+    let (window, session) = clients
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))?
+        .split_once('\t')?;
+    let index = rows.lines().position(|line| {
+        let mut fields = line.split('\t');
+        fields.next() == Some(window) && fields.next() == Some(session)
+    })?;
+    Some(index + 1)
 }
 
 /// What fzf's exit code, query and selected row amount to: a target to
@@ -242,10 +262,10 @@ pub fn refresh(snapshot: &Path) -> Result<()> {
     if idle < 1000 || !popup.exists() {
         return Ok(());
     }
-    let settings = || (Switcher::load(), popup.mode());
-    let before = settings();
+    let settings = || -> Result<_> { Ok((Switcher::load()?, popup.mode())) };
+    let before = settings()?;
     let text = rows::text(before.1)?;
-    if settings() != before {
+    if settings()? != before {
         // A key changed the favorites or the mode while we were computing;
         // it reloads on its own, and these rows would flash the old state.
         return Ok(());
@@ -259,4 +279,24 @@ pub fn refresh(snapshot: &Path) -> Result<()> {
         fzf::quote(&snapshot.to_string_lossy())
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cursor_starts_on_the_clients_window() {
+        // @1 is linked into both sessions; the client is in beta.
+        let rows = "$0\talpha\n@0\talpha\n@1\talpha\n$1\tbeta\n@1\tbeta\n";
+        let clients = "/dev/ttys001\t@0\talpha\n/dev/ttys002\t@1\tbeta\n";
+        assert_eq!(client_row(clients, "/dev/ttys002", rows), Some(5));
+        assert_eq!(client_row(clients, "/dev/ttys001", rows), Some(2));
+        assert_eq!(
+            client_row(clients, "/dev/ttys00", rows),
+            None,
+            "names match whole"
+        );
+        assert_eq!(client_row("", "/dev/ttys001", rows), None);
+    }
 }

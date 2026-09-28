@@ -47,7 +47,7 @@ pub enum FavoriteMode {
 
 /// `ctrl-s`.
 pub fn favorite(mode: FavoriteMode, name: &str) -> Result<()> {
-    let mut state = Switcher::load();
+    let mut state = Switcher::load()?;
     let star = match mode {
         FavoriteMode::Star => true,
         FavoriteMode::Unstar => false,

@@ -111,7 +111,8 @@ fn main() {
             } else {
                 popup::Mode::Sessions
             };
-            switch::run(&client, mode)
+            switch::run(&client, mode);
+            Ok(())
         }
         Command::Mode { action } => actions::mode(action),
         Command::Open { path } => projects::open(&path).map(|id| println!("{id}")),

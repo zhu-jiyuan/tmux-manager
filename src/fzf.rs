@@ -36,7 +36,8 @@ pub fn check_version(fzf: &Path) -> Result<()> {
         _ => bail!("cannot read fzf version from {first:?}"),
     };
     if version < MIN_VERSION {
-        bail!("update fzf to 0.74.3+ (found {first})");
+        let (major, minor, patch) = MIN_VERSION;
+        bail!("update fzf to {major}.{minor}.{patch}+ (found {first})");
     }
     Ok(())
 }
@@ -46,7 +47,8 @@ pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// This binary, quoted, for the commands fzf runs on each key.
+/// This binary's path, quoted, for commands that call back into tmm: the
+/// ones fzf runs on each key, and the agents' hooks.
 pub fn me() -> String {
     quote(&env::current_exe().expect("own path").to_string_lossy())
 }
