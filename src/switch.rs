@@ -154,8 +154,6 @@ fn pick(fzf_bin: &Path, client: &str, mode: Mode, popup: &Popup) -> Result<Outpu
         // No gutter bar: fzf would otherwise paint every row's first column.
         "--gutter",
         " ",
-        "--color",
-        &fzf::colours().join(","),
     ]);
     for bind in binds(&me) {
         command.args(["--bind", &bind]);

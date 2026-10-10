@@ -1,12 +1,10 @@
-//! Locating fzf and translating tmux's colours into fzf's.
+//! Locating fzf and quoting the commands it runs.
 
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Result, bail};
-
-use crate::tmux;
 
 /// `bg-transform`, `every()`, `--footer`, `--gutter`, `--id-nth`.
 const MIN_VERSION: (u32, u32, u32) = (0, 74, 3);
@@ -53,74 +51,9 @@ pub fn me() -> String {
     quote(&env::current_exe().expect("own path").to_string_lossy())
 }
 
-/// A tmux colour name as fzf spells it, or `None` for the terminal default.
-pub fn colour_name(value: &str) -> Option<String> {
-    let value = value.to_ascii_lowercase();
-    if matches!(value.as_str(), "" | "default" | "terminal") {
-        return None;
-    }
-    if let Some(n) = value
-        .strip_prefix("colour")
-        .or_else(|| value.strip_prefix("color"))
-        && !n.is_empty()
-        && n.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Some(n.to_string());
-    }
-    if let Some(base) = value.strip_prefix("bright") {
-        return Some(format!("bright-{base}"));
-    }
-    Some(value)
-}
-
-/// `--color` entries painting the current line like the tmux status bar:
-/// its background behind the cursor row, its foreground for the text there.
-/// A status bar without a background leaves the highlight to the user's own
-/// fzf theme.
-///
-/// Nothing is stripped on the highlighted row: the dots keep their colours,
-/// so the row under the cursor still shows whether an agent needs you.
-/// `regular` drops fzf's own bold for the current line, leaving only a
-/// session header bold there.
-pub fn colours() -> Vec<String> {
-    let style = tmux::run_lossy(&["display-message", "-p", "#{status-style}"]);
-    let part = |key: &str| {
-        style
-            .split(',')
-            .find_map(|part| part.strip_prefix(key))
-            .and_then(colour_name)
-    };
-    let mut colours = vec!["gutter:-1".to_string()];
-    let Some(bg) = part("bg=") else {
-        colours.push("fg+:regular".to_string());
-        return colours;
-    };
-    let fg = part("fg=").unwrap_or_else(|| "-1".to_string());
-    colours.extend([
-        format!("fg+:{fg}:regular"),
-        format!("bg+:{bg}"),
-        format!("hl:{bg}"),
-        format!("pointer:{bg}"),
-        format!("prompt:{bg}"),
-        format!("hl+:{fg}:underline"),
-    ]);
-    colours
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn colour_names() {
-        let name = |c: &str| colour_name(c);
-        assert_eq!(name("green").as_deref(), Some("green"));
-        assert_eq!(name("colour235").as_deref(), Some("235"));
-        assert_eq!(name("color7").as_deref(), Some("7"));
-        assert_eq!(name("brightred").as_deref(), Some("bright-red"));
-        assert_eq!(name("#ff8800").as_deref(), Some("#ff8800"));
-        assert_eq!(name("default"), None);
-    }
 
     #[test]
     fn shell_quoting() {

@@ -58,20 +58,17 @@ if [ -z "$bin" ]; then
 fi
 
 # display-popup does not expand formats in its command (tmux 3.4), so run-shell
-# fills in the client name and opens the popup on that client. The border takes
-# the status bar's background colour, or the default when it has none. Both
-# styles are spelled out because tmux 3.8 gives popups a dark grey popup-style
-# and popup-border-style by default; tm follows the terminal instead.
+# fills in the client name and opens the popup on that client. Its look is the
+# user's: popup-style, popup-border-style, popup-border-lines.
 size="-w '$(get_opt "@tm-switch-width" "75%")' -h '$(get_opt "@tm-switch-height" "65%")'"
-border="-s 'bg=default,fg=default' -S 'bg=default,fg=#{?#{m/r:bg=,#{status-style}},#{s/.*bg=([^,]*).*/\\1/:status-style},default}'"
 
 bind_popup() {
-  # $1 key, $2 popup title, $3 extra tm arguments
-  tmux bind-key "$1" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -b rounded -T '#[fg=white] $2 ' $size $border \"'$bin' switch '#{q:client_name}' $3\""
+  # $1 key, $2 extra tm arguments
+  tmux bind-key "$1" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -T ' tm ' $size \"'$bin' switch '#{q:client_name}' $2\""
 }
 
-bind_popup "$(get_opt "@tm-session-key" "s")" "tm" ""
-bind_popup "$(get_opt "@tm-window-key" "w")" "tm" "--windows"
+bind_popup "$(get_opt "@tm-session-key" "s")" ""
+bind_popup "$(get_opt "@tm-window-key" "w")" "--windows"
 if [ -n "$(get_opt "@tm-projects" "")" ]; then
-  bind_popup "$(get_opt "@tm-project-key" "f")" "tm" "--projects"
+  bind_popup "$(get_opt "@tm-project-key" "f")" "--projects"
 fi
