@@ -59,9 +59,11 @@ fi
 
 # display-popup does not expand formats in its command (tmux 3.4), so run-shell
 # fills in the client name and opens the popup on that client. The border takes
-# the status bar's background colour, or the default when it has none.
+# the status bar's background colour, or the default when it has none. Both
+# styles are spelled out because tmux 3.8 gives popups a dark grey popup-style
+# and popup-border-style by default; tmm follows the terminal instead.
 size="-w '$(get_opt "@tmm-switch-width" "75%")' -h '$(get_opt "@tmm-switch-height" "65%")'"
-border="-S 'fg=#{?#{m/r:bg=,#{status-style}},#{s/.*bg=([^,]*).*/\\1/:status-style},default}'"
+border="-s 'bg=default,fg=default' -S 'bg=default,fg=#{?#{m/r:bg=,#{status-style}},#{s/.*bg=([^,]*).*/\\1/:status-style},default}'"
 
 bind_popup() {
   # $1 key, $2 popup title, $3 extra tmm arguments
