@@ -1,6 +1,6 @@
 //! Agent activity: one state per tmux window.
 //!
-//! Two sources feed it. The harnesses' lifecycle hooks call `tmm hook`, which
+//! Two sources feed it. The harnesses' lifecycle hooks call `tm hook`, which
 //! stores a small JSON record on the pane as a tmux user option. Without
 //! hooks, or when the record is stale, the last screen lines say whether the
 //! agent is waiting. What a hook event or a screen means belongs to the
@@ -25,8 +25,8 @@ use crate::harness::{self, Harness, Record};
 use crate::tmux::{self, Pane};
 
 /// The tmux pane option a hook stores its record in; `tmux::panes` reads it
-/// back as `#{@tmm-agent}`.
-pub const OPTION: &str = "@tmm-agent";
+/// back as `#{@tm-agent}`.
+pub const OPTION: &str = "@tm-agent";
 
 /// Ordered by priority: waiting beats working beats plain, so the strongest
 /// state of a set of panes is simply the maximum.
@@ -150,9 +150,9 @@ fn pane_state(
 /// only for panes that could hold an agent: something other than the shell
 /// is in front, or a hook record is present. Which harness it is, if any,
 /// is left to its command line in `ps`, never guessed from a name.
-/// `TMM_AGENT_SCAN=always` checks every pane.
+/// `TM_AGENT_SCAN=always` checks every pane.
 pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
-    let always = env::var("TMM_AGENT_SCAN").is_ok_and(|v| v == "always");
+    let always = env::var("TM_AGENT_SCAN").is_ok_and(|v| v == "always");
     // A record catches the agents a shell runs from a command line, which
     // look like a pane at its prompt.
     let suspicious =

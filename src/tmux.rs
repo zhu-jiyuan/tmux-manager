@@ -58,7 +58,7 @@ pub struct Pane {
     /// sits at its prompt. A shell running a command line (`new-window
     /// 'claude; exec zsh'`) looks the same while the command runs.
     pub at_prompt: bool,
-    /// The record a harness's hook stored on the pane (`@tmm-agent`), if any.
+    /// The record a harness's hook stored on the pane (`@tm-agent`), if any.
     pub record: Option<String>,
 }
 
@@ -71,7 +71,7 @@ pub fn panes() -> Result<Vec<Pane>> {
         "-F",
         "#{session_id}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t\
          #{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{==:#{pane_current_command},#{b:default-shell}}\t\
-         #{@tmm-agent}\t#{session_path}\t#{session_name}\t#{window_name}",
+         #{@tm-agent}\t#{session_path}\t#{session_name}\t#{window_name}",
     ])?
     .lines()
     .map(|line| {

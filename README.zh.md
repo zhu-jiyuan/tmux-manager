@@ -1,4 +1,4 @@
-# tmm
+# tm
 
 [English](README.md)
 
@@ -6,7 +6,7 @@
 改名、关闭，并在有 Claude Code / Codex 的窗口上用绿点或黄点显示它是在工作还是在等你。
 Rust 单二进制，每个按键只跑一次几毫秒的子命令。
 
-![tmm 弹窗](docs/tmm.svg)
+![tm 弹窗](docs/tm.svg)
 
 ## 安装
 
@@ -15,7 +15,7 @@ Rust 单二进制，每个按键只跑一次几毫秒的子命令。
 用 [TPM](https://github.com/tmux-plugins/tpm) 的话，加上插件后按 `prefix + I`：
 
 ```tmux
-set -g @plugin 'zhu-jiyuan/tmm'
+set -g @plugin 'zhu-jiyuan/tmux-manager'
 ```
 
 插件会把对应平台的 release 二进制下载到脚本旁边，用 GitHub 公布的 digest 校验；
@@ -25,10 +25,10 @@ set -g @plugin 'zhu-jiyuan/tmm'
 然后在 tmux 配置里加一行并重载：
 
 ```tmux
-run-shell /path/to/tmm.tmux
+run-shell /path/to/tm.tmux
 ```
 
-想看 agent 的工作 / 等待状态，跑一次 `tmm install-hooks`，它会把 hook 合并进
+想看 agent 的工作 / 等待状态，跑一次 `tm install-hooks`，它会把 hook 合并进
 `~/.claude/settings.json` 和 `~/.codex/hooks.json`（先备份）。
 
 ## 键位
@@ -48,16 +48,16 @@ run-shell /path/to/tmm.tmux
 | `Ctrl-/` | 键位提示 |
 | `Esc` | 关闭 |
 
-选项：`@tmm-session-key`、`@tmm-window-key`、`@tmm-project-key`、`@tmm-projects`、
-`@tmm-switch-width`、`@tmm-switch-height`、`@tmm-bin`，写在 `run-shell` 之前。
+选项：`@tm-session-key`、`@tm-window-key`、`@tm-project-key`、`@tm-projects`、
+`@tm-switch-width`、`@tm-switch-height`、`@tm-bin`，写在 `run-shell` 之前。
 
 ## 项目
 
-把 `@tmm-projects` 指向存放项目的目录，`prefix + f` 就会列出其中的项目，开着的和
+把 `@tm-projects` 指向存放项目的目录，`prefix + f` 就会列出其中的项目，开着的和
 没开的都有。`Enter` 切换到项目的 session，没有就以该目录为工作目录新建一个。
 
 ```tmux
-set -g @tmm-projects "~/work ~/oss:2"
+set -g @tm-projects "~/work ~/oss:2"
 ```
 
 每个根目录默认扫一层，`:N` 指定层数，隐藏目录跳过。session 按启动目录归属项目，

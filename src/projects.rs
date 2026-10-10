@@ -1,4 +1,4 @@
-//! Project directories: the roots named by the `@tmm-projects` tmux option,
+//! Project directories: the roots named by the `@tm-projects` tmux option,
 //! scanned a level or two deep, and how a directory becomes a session.
 //!
 //! A project row's id is its absolute path. No session (`$n`) or window
@@ -68,7 +68,7 @@ pub fn free_name(path: &Path, taken: impl Fn(&str) -> bool) -> String {
 
 /// The option's entries: a path, optionally with `:depth` (default 1).
 fn roots() -> Vec<(PathBuf, usize)> {
-    tmux::run_lossy(&["show-option", "-gqv", "@tmm-projects"])
+    tmux::run_lossy(&["show-option", "-gqv", "@tm-projects"])
         .split_whitespace()
         .map(|entry| match entry.rsplit_once(':') {
             Some((path, depth))

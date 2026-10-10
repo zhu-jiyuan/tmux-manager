@@ -47,7 +47,7 @@ pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// This binary's path, quoted, for commands that call back into tmm: the
+/// This binary's path, quoted, for commands that call back into tm: the
 /// ones fzf runs on each key, and the agents' hooks.
 pub fn me() -> String {
     quote(&env::current_exe().expect("own path").to_string_lossy())

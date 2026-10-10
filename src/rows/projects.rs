@@ -1,4 +1,4 @@
-//! Projects mode: every directory under `@tmm-projects`. One with a session
+//! Projects mode: every directory under `@tm-projects`. One with a session
 //! started in it is that session's row, dots and all; one without carries
 //! its path as the id, which Enter turns into a session. Open ones come
 //! before the rest, each in name order, and `build` puts starred ones first.

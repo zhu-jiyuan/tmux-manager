@@ -1,8 +1,8 @@
-//! Merge `tmm hook` into a harness's hooks file without replacing what is there.
+//! Merge `tm hook` into a harness's hooks file without replacing what is there.
 //!
-//! `tmm install-hooks` lets every harness install itself; the ones that keep
+//! `tm install-hooks` lets every harness install itself; the ones that keep
 //! their hooks in a JSON file share [`merge`]. Existing entries are kept,
-//! earlier tmm entries are replaced, and any changed file is backed up first.
+//! earlier tm entries are replaced, and any changed file is backed up first.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -14,10 +14,19 @@ use serde_json::{Value, json};
 
 use crate::{fzf, harness, paths};
 
+/// `'/path/to/tm' hook <harness>`, or `tmm` from before the rename.
 fn is_ours(item: &Value) -> bool {
-    item.get("command")
-        .and_then(Value::as_str)
-        .is_some_and(|command| command.contains("tmm") && command.contains(" hook "))
+    let Some(command) = item.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some((program, _)) = command.split_once(" hook ") else {
+        return false;
+    };
+    let program = Path::new(program.trim().trim_matches(['\'', '"']));
+    matches!(
+        program.file_name().and_then(|name| name.to_str()),
+        Some("tm" | "tmm")
+    )
 }
 
 /// Returns whether the file changed.
@@ -60,7 +69,7 @@ pub fn merge(path: &Path, events: &[&str], command: &str) -> Result<bool> {
     if path.exists() {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let backup = path.with_file_name(format!(
-            "{}.before-tmm-{stamp}",
+            "{}.before-tm-{stamp}",
             path.file_name().unwrap_or_default().to_string_lossy()
         ));
         fs::copy(path, &backup)?;
@@ -102,27 +111,29 @@ mod tests {
 
     #[test]
     fn merge_keeps_foreign_hooks_and_replaces_ours() {
-        let dir = env::temp_dir().join(format!("tmm-install-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("tm-install-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         fs::write(
             &path,
-            r#"{"other": 1, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "theirs"}, {"type": "command", "command": "/old/tmm hook claude"}]}]}}"#,
+            r#"{"other": 1, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "theirs"}, {"type": "command", "command": "/opt/utm/gk ai hook run"}, {"type": "command", "command": "/old/tmm hook claude"}]}]}}"#,
         )
         .unwrap();
-        assert!(merge(&path, &["Stop", "SessionStart"], "'/new/tmm' hook claude").unwrap());
+        assert!(merge(&path, &["Stop", "SessionStart"], "'/new/tm' hook claude").unwrap());
         let data: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(data["other"], 1);
         let stop = data["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 2);
         assert_eq!(stop[0]["hooks"][0]["command"], "theirs");
-        assert_eq!(stop[1]["hooks"][0]["command"], "'/new/tmm' hook claude");
+        assert_eq!(stop[0]["hooks"][1]["command"], "/opt/utm/gk ai hook run");
+        assert_eq!(stop[0]["hooks"].as_array().unwrap().len(), 2);
+        assert_eq!(stop[1]["hooks"][0]["command"], "'/new/tm' hook claude");
         assert_eq!(
             data["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            "'/new/tmm' hook claude"
+            "'/new/tm' hook claude"
         );
         assert!(
-            !merge(&path, &["Stop", "SessionStart"], "'/new/tmm' hook claude").unwrap(),
+            !merge(&path, &["Stop", "SessionStart"], "'/new/tm' hook claude").unwrap(),
             "second run is a no-op"
         );
         let _ = fs::remove_dir_all(&dir);

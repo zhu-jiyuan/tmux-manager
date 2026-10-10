@@ -1,4 +1,4 @@
-//! tmm: a personal tmux session and window switcher built on fzf, with
+//! tm: a personal tmux session and window switcher built on fzf, with
 //! agent activity dots.
 //!
 //! One binary, many small subcommands. `switch` opens the popup, and every
@@ -30,7 +30,7 @@ use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "tmm",
+    name = "tm",
     version,
     about = "tmux session and window switcher on fzf, with agent activity dots",
     disable_help_subcommand = true
@@ -118,7 +118,7 @@ enum Command {
     },
     /// Print per-window agent activity as JSON
     Activity,
-    /// Install the hooks of every harness tmm knows
+    /// Install the hooks of every harness tm knows
     InstallHooks,
 }
 
@@ -158,7 +158,7 @@ fn main() {
         Command::InstallHooks => install::install_hooks(),
     };
     if let Err(error) = result {
-        eprintln!("tmm: {error:#}");
+        eprintln!("tm: {error:#}");
         std::process::exit(1);
     }
 }

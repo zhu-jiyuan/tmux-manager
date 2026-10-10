@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Put the tmm binary for this machine next to tmm.tmux.
+# Put the tm binary for this machine next to tm.tmux.
 #
-# tmm.tmux runs this when a checkout has no binary, or when the binary it
+# tm.tmux runs this when a checkout has no binary, or when the binary it
 # fetched earlier is not the version the checkout expects (after `prefix + U`
 # in TPM). It can also be run by hand:
-#   ~/.tmux/plugins/tmm/scripts/install.sh
+#   ~/.tmux/plugins/tmux-manager/scripts/install.sh
 #
 # The release tarball for this platform is downloaded from GitHub and checked
 # against the SHA-256 digest GitHub publishes for the asset. When there is no
@@ -13,13 +13,13 @@
 set -euo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-repo="zhu-jiyuan/tmm"
+repo="zhu-jiyuan/tmux-manager"
 version="$(grep -m1 '^version' "$dir/Cargo.toml" | cut -d'"' -f2)"
-bin="$dir/tmm"
+bin="$dir/tm"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-say() { printf 'tmm: %s\n' "$*"; }
+say() { printf 'tm: %s\n' "$*"; }
 
 # The release target for this machine, or nothing.
 target() {
@@ -49,9 +49,9 @@ published_digest() {
     | sed 's/.*sha256://; s/"//'
 }
 
-# Download the release for `$1`, verify it, and leave the binary in $tmp/tmm.
+# Download the release for `$1`, verify it, and leave the binary in $tmp/tm.
 download() {
-  local name="tmm-v$version-$1"
+  local name="tm-v$version-$1"
   local url="https://github.com/$repo/releases/download/v$version/$name.tar.gz"
   command -v curl >/dev/null 2>&1 || return 1
   say "downloading $url"
@@ -67,36 +67,36 @@ download() {
     say "checksum mismatch for $name.tar.gz: expected $expected, got $actual"
     return 1
   fi
-  tar -xzf "$tmp/$name.tar.gz" -C "$tmp" "$name/tmm" || return 1
-  mv "$tmp/$name/tmm" "$tmp/tmm"
+  tar -xzf "$tmp/$name.tar.gz" -C "$tmp" "$name/tm" || return 1
+  mv "$tmp/$name/tm" "$tmp/tm"
 }
 
 build() {
   command -v cargo >/dev/null 2>&1 || return 1
-  say "building tmm $version with cargo"
+  say "building tm $version with cargo"
   (cd "$dir" && cargo build --release --locked) || return 1
-  cp "$dir/target/release/tmm" "$tmp/tmm"
+  cp "$dir/target/release/tm" "$tmp/tm"
 }
 
 # Move the built or downloaded binary into place once it is known to run.
 install() {
-  chmod +x "$tmp/tmm"
-  "$tmp/tmm" --version >/dev/null 2>&1 || return 1
-  mv "$tmp/tmm" "$bin.new" && mv "$bin.new" "$bin"
+  chmod +x "$tmp/tm"
+  "$tmp/tm" --version >/dev/null 2>&1 || return 1
+  mv "$tmp/tm" "$bin.new" && mv "$bin.new" "$bin"
 }
 
 if [ -L "$bin" ]; then
   say "$bin is a symlink; leaving it alone"
   exit 0
 fi
-if [ -x "$bin" ] && [ "$("$bin" --version 2>/dev/null)" = "tmm $version" ]; then
-  say "tmm $version is already installed"
+if [ -x "$bin" ] && [ "$("$bin" --version 2>/dev/null)" = "tm $version" ]; then
+  say "tm $version is already installed"
   exit 0
 fi
 
 target="$(target)"
 if [ -n "$target" ] && download "$target" && install; then
-  say "installed tmm $version at $bin"
+  say "installed tm $version at $bin"
   exit 0
 fi
 if [ -n "$target" ]; then
@@ -105,8 +105,8 @@ else
   say "no release for $(uname -s)/$(uname -m)"
 fi
 if build && install; then
-  say "built tmm $version at $bin"
+  say "built tm $version at $bin"
   exit 0
 fi
-say "could not install tmm $version; build it yourself and set @tmm-bin"
+say "could not install tm $version; build it yourself and set @tm-bin"
 exit 1

@@ -1,4 +1,4 @@
-//! Where tmm keeps things on disk.
+//! Where tm keeps things on disk.
 //!
 //! Persistent state (favorites) lives in the state directory. Per-popup
 //! scratch files (the row snapshot fzf is showing and its sidecars, see
@@ -14,15 +14,15 @@ pub fn home() -> PathBuf {
     env::home_dir().expect("a home directory")
 }
 
-/// `$TMM_STATE_DIR`, else `$XDG_STATE_HOME/tmm`, else `~/.local/state/tmm`.
+/// `$TM_STATE_DIR`, else `$XDG_STATE_HOME/tm`, else `~/.local/state/tm`.
 pub fn state_dir() -> PathBuf {
-    if let Some(dir) = env::var_os("TMM_STATE_DIR") {
+    if let Some(dir) = env::var_os("TM_STATE_DIR") {
         return PathBuf::from(dir);
     }
     if let Some(xdg) = env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(xdg).join("tmm");
+        return PathBuf::from(xdg).join("tm");
     }
-    home().join(".local/state/tmm")
+    home().join(".local/state/tm")
 }
 
 pub fn run_dir() -> Result<PathBuf> {
@@ -39,7 +39,7 @@ pub fn switcher_file() -> PathBuf {
 /// the commands fzf runs share small bits of state through sidecars. `None`
 /// from a shell (an empty value counts as unset): see `Popup::current`.
 pub fn snapshot() -> Option<PathBuf> {
-    env::var_os("TMM_SNAPSHOT")
+    env::var_os("TM_SNAPSHOT")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
 }

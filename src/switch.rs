@@ -4,7 +4,7 @@
 //! `ctrl-j`/`ctrl-k`, everything else is a control key. Arrows and function
 //! keys are avoided on purpose: they need Fn on an HHKB. All of it is fzf
 //! `--bind` strings, so the only process alive while the user navigates is
-//! fzf itself; each key runs one short `tmm` subcommand (see `actions`).
+//! fzf itself; each key runs one short `tm` subcommand (see `actions`).
 //!
 //! The popup has three modes (see `popup::Mode`): sessions, windows and
 //! projects. `prefix + s`, `prefix + w` and `prefix + f` pick the initial
@@ -44,7 +44,7 @@ fn message(client: &str, text: &str) {
     let _ = tmux::run(&["display-message", "-c", client, &text]);
 }
 
-/// The key bindings, each running one `tmm` subcommand. `{1}` is the row
+/// The key bindings, each running one `tm` subcommand. `{1}` is the row
 /// id, `{2}` the session name; fzf quotes them for the shell. Keys fzf
 /// already binds for editing and moving (ctrl-a/e/u/w, ctrl-j/k/n/p) are
 /// left alone.
@@ -82,11 +82,11 @@ fn binds(me: &str) -> Vec<String> {
     ]
 }
 
-/// `prefix + s`, `w` or `f`. The popup closes the moment tmm exits, so
+/// `prefix + s`, `w` or `f`. The popup closes the moment tm exits, so
 /// stderr would go unseen: a failure goes to the client's status line.
 pub fn run(client: &str, mode: Mode) {
     if let Err(error) = open(client, mode) {
-        message(client, &format!("tmm: {error:#}"));
+        message(client, &format!("tm: {error:#}"));
     }
 }
 
@@ -176,7 +176,7 @@ fn pick(fzf_bin: &Path, client: &str, mode: Mode, popup: &Popup) -> Result<Outpu
     command
         .env("SHELL", "/bin/sh")
         .env(
-            "TMM_SNAPSHOT",
+            "TM_SNAPSHOT",
             popup.snapshot().context("the popup's snapshot")?,
         )
         // The dots carry meaning; never let NO_COLOR blank them.

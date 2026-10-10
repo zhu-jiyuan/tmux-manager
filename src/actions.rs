@@ -29,7 +29,7 @@ fn query() -> String {
     env::var("FZF_QUERY").unwrap_or_default()
 }
 
-/// Reload the rows from `tmm list`.
+/// Reload the rows from `tm list`.
 pub(crate) fn reload() -> String {
     format!("reload-sync({} list)", fzf::me())
 }
@@ -179,7 +179,7 @@ pub fn close(id: &str) -> Result<()> {
     }
     match kill(&id) {
         Ok(()) => println!("{}", reload()),
-        Err(error) => println!("change-header{}", arg(&format!("tmm: {error}"))),
+        Err(error) => println!("change-header{}", arg(&format!("tm: {error}"))),
     }
     Ok(())
 }
@@ -367,7 +367,7 @@ pub fn enter() -> Result<()> {
     match apply(&pending.question, answer.trim()) {
         Ok(true) => println!("{restore}+{}", reload()),
         Ok(false) => println!("{restore}"),
-        Err(error) => println!("{restore}+change-header{}", arg(&format!("tmm: {error}"))),
+        Err(error) => println!("{restore}+change-header{}", arg(&format!("tm: {error}"))),
     }
     Ok(())
 }

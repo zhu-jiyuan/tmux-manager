@@ -21,13 +21,13 @@ use serde_json::Value;
 
 use crate::agent::State;
 
-/// Every harness tmm knows, in the order they are tried.
+/// Every harness tm knows, in the order they are tried.
 pub const ALL: &[&dyn Harness] = &[&claude::Claude, &codex::Codex];
 
 /// Interpreters a harness may run under; their name alone says nothing.
 const INTERPRETERS: &[&str] = &["node", "bun"];
 
-/// The harness `tmm hook <name>` was called for.
+/// The harness `tm hook <name>` was called for.
 pub fn by_name(name: &str) -> Option<&'static dyn Harness> {
     ALL.iter().copied().find(|harness| harness.name() == name)
 }
@@ -38,7 +38,7 @@ pub fn detect(command: &str) -> Option<&'static dyn Harness> {
 }
 
 pub trait Harness {
-    /// The name on the command line (`tmm hook <name>`) and in records.
+    /// The name on the command line (`tm hook <name>`) and in records.
     fn name(&self) -> &'static str;
 
     /// Whether this command line, as `ps` prints it, runs the harness. Judged

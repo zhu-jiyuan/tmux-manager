@@ -1,4 +1,4 @@
-# tmm
+# tm
 
 [中文](README.zh.md)
 
@@ -7,7 +7,7 @@ create, rename and close them, with a green or yellow dot on each window
 where Claude Code or Codex is working or waiting for you. A single Rust
 binary; every key runs one subcommand that takes a few milliseconds.
 
-![tmm popup](docs/tmm.svg)
+![tm popup](docs/tm.svg)
 
 ## Install
 
@@ -17,7 +17,7 @@ With [TPM](https://github.com/tmux-plugins/tpm), add the plugin and press
 `prefix + I`:
 
 ```tmux
-set -g @plugin 'zhu-jiyuan/tmm'
+set -g @plugin 'zhu-jiyuan/tmux-manager'
 ```
 
 The plugin fetches the release binary for your platform next to its script,
@@ -30,10 +30,10 @@ platform from Releases and unpack it. Then add one line to your tmux config and
 reload:
 
 ```tmux
-run-shell /path/to/tmm.tmux
+run-shell /path/to/tm.tmux
 ```
 
-For the agent dots run `tmm install-hooks` once. It merges its hooks into
+For the agent dots run `tm install-hooks` once. It merges its hooks into
 `~/.claude/settings.json` and `~/.codex/hooks.json`, backing them up first.
 
 ## Keys
@@ -53,18 +53,18 @@ For the agent dots run `tmm install-hooks` once. It merges its hooks into
 | `Ctrl-/` | key legend |
 | `Esc` | close |
 
-Options, set before the `run-shell` line: `@tmm-session-key`,
-`@tmm-window-key`, `@tmm-project-key`, `@tmm-projects`, `@tmm-switch-width`,
-`@tmm-switch-height`, `@tmm-bin`.
+Options, set before the `run-shell` line: `@tm-session-key`,
+`@tm-window-key`, `@tm-project-key`, `@tm-projects`, `@tm-switch-width`,
+`@tm-switch-height`, `@tm-bin`.
 
 ## Projects
 
-Point `@tmm-projects` at the directories that hold your projects and
+Point `@tm-projects` at the directories that hold your projects and
 `prefix + f` lists them, open or not. `Enter` switches to a project's
 session, creating it in that directory when there is none yet.
 
 ```tmux
-set -g @tmm-projects "~/work ~/oss:2"
+set -g @tm-projects "~/work ~/oss:2"
 ```
 
 Each root is scanned one level deep, or `:N` levels; hidden directories are

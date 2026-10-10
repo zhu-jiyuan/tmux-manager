@@ -30,7 +30,7 @@ fn csi_len(s: &str) -> Option<usize> {
     }
 }
 
-/// The foreground colours tmm paints with: the plain ANSI ones, never the
+/// The foreground colours tm paints with: the plain ANSI ones, never the
 /// bright variants (see `rows::dots` for why).
 #[derive(Clone, Copy)]
 pub enum Colour {

@@ -10,12 +10,12 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-const TMM: &str = env!("CARGO_BIN_EXE_tmm");
+const TM: &str = env!("CARGO_BIN_EXE_tm");
 
 /// What fzf and a popup put in a callback's environment. A shell run has
 /// none of them, whatever the environment `cargo test` runs in.
 const POPUP_VARS: [&str; 6] = [
-    "TMM_SNAPSHOT",
+    "TM_SNAPSHOT",
     "TMUX_PANE",
     "FZF_QUERY",
     "FZF_IDLE_TIME_MS",
@@ -58,7 +58,7 @@ impl Server {
             eprintln!("tmux is not installed; skipping");
             return None;
         }
-        let socket = format!("tmm-test-{}-{tag}", std::process::id());
+        let socket = format!("tm-test-{}-{tag}", std::process::id());
         let state = std::env::temp_dir().join(format!("{socket}-state"));
         fs::create_dir_all(&state).unwrap();
         let mut server = Server {
@@ -96,37 +96,37 @@ impl Server {
             .to_string()
     }
 
-    /// Run tmm the way fzf would inside a popup of this server, with `env`
+    /// Run tm the way fzf would inside a popup of this server, with `env`
     /// on top of fzf's usual variables, and return what it printed. A
-    /// failing tmm fails the test with its stderr.
-    fn tmm_env(&self, args: &[&str], env: &[(&str, &str)]) -> String {
+    /// failing tm fails the test with its stderr.
+    fn tm_env(&self, args: &[&str], env: &[(&str, &str)]) -> String {
         let snapshot = self.state.join("snap.txt");
         let mut popup = vec![
-            ("TMM_SNAPSHOT", snapshot.to_str().unwrap()),
+            ("TM_SNAPSHOT", snapshot.to_str().unwrap()),
             ("FZF_PREVIEW_COLUMNS", "80"),
             ("FZF_PREVIEW_LINES", "24"),
             ("FZF_QUERY", ""),
         ];
         popup.extend_from_slice(env);
-        self.run_tmm(args, &popup)
+        self.run_tm(args, &popup)
     }
 
-    fn tmm(&self, args: &[&str]) -> String {
-        self.tmm_env(args, &[])
+    fn tm(&self, args: &[&str]) -> String {
+        self.tm_env(args, &[])
     }
 
-    /// Run tmm the way a user would from a shell on this server: no popup,
+    /// Run tm the way a user would from a shell on this server: no popup,
     /// no fzf variables.
-    fn tmm_shell(&self, args: &[&str]) -> String {
-        self.run_tmm(args, &[])
+    fn tm_shell(&self, args: &[&str]) -> String {
+        self.run_tm(args, &[])
     }
 
-    fn run_tmm(&self, args: &[&str], env: &[(&str, &str)]) -> String {
-        let mut command = Command::new(TMM);
+    fn run_tm(&self, args: &[&str], env: &[(&str, &str)]) -> String {
+        let mut command = Command::new(TM);
         command
             .args(args)
             .env("TMUX", &self.tmux_env)
-            .env("TMM_STATE_DIR", &self.state);
+            .env("TM_STATE_DIR", &self.state);
         for var in POPUP_VARS {
             command.env_remove(var);
         }
@@ -136,7 +136,7 @@ impl Server {
         let output = command.output().unwrap();
         assert!(
             output.status.success(),
-            "tmm {args:?} failed: {}",
+            "tm {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).to_string()
@@ -145,9 +145,9 @@ impl Server {
     /// Open an inline prompt for `id` and answer it, as fzf would: the
     /// `prompt` transform first, then `enter` with the typed query.
     fn answer(&self, kind: &str, id: &str, text: &str) -> String {
-        let opened = self.tmm(&["prompt", kind, id]);
+        let opened = self.tm(&["prompt", kind, id]);
         assert!(opened.starts_with("change-prompt("), "{opened}");
-        self.tmm_env(&["enter"], &[("FZF_QUERY", text)])
+        self.tm_env(&["enter"], &[("FZF_QUERY", text)])
     }
 
     fn session_id(&self, name: &str) -> String {
@@ -213,7 +213,7 @@ fn rows_favorites_help_and_refresh() {
     server.tmux(&["new-session", "-d", "-s", "gamma", "-x", "120", "-y", "40"]);
     server.tmux(&["new-window", "-d", "-t", "beta:"]);
 
-    let rows = server.tmm(&["list"]);
+    let rows = server.tm(&["list"]);
     assert_eq!(names(&rows), ["alpha", "beta", "gamma"]);
     // A mode given to `list` inside a popup prints that mode's rows and
     // leaves the popup alone: its snapshot still holds what fzf shows. Rows
@@ -221,21 +221,21 @@ fn rows_favorites_help_and_refresh() {
     // the shell starts.
     let snapshot = server.state.join("snap.txt");
     fs::write(&snapshot, "opened\n").unwrap();
-    assert_eq!(server.tmm(&["list"]), rows);
+    assert_eq!(server.tm(&["list"]), rows);
     assert_eq!(fs::read_to_string(&snapshot).unwrap(), rows);
     for mode in ["windows", "projects"] {
-        server.tmm(&["mode", mode]);
-        let theirs = ids(&server.tmm(&["list"]));
-        server.tmm(&["mode", "sessions"]);
-        server.tmm(&["list"]);
+        server.tm(&["mode", mode]);
+        let theirs = ids(&server.tm(&["list"]));
+        server.tm(&["mode", "sessions"]);
+        server.tm(&["list"]);
         let before = fs::read_to_string(&snapshot).unwrap();
-        let flagged = server.tmm(&["list", &format!("--{mode}")]);
+        let flagged = server.tm(&["list", &format!("--{mode}")]);
         assert_eq!(ids(&flagged), theirs, "{mode}");
         assert_eq!(fs::read_to_string(&snapshot).unwrap(), before, "{mode}");
         assert!(!server.state.join("snap.mode").exists(), "{mode}");
     }
     assert_eq!(
-        server.tmm_env(&["refresh"], &[("FZF_IDLE_TIME_MS", "1500")]),
+        server.tm_env(&["refresh"], &[("FZF_IDLE_TIME_MS", "1500")]),
         "",
         "the snapshot still matches the rows on show"
     );
@@ -248,8 +248,8 @@ fn rows_favorites_help_and_refresh() {
     );
     assert!(beta[5].contains("2 windows"));
 
-    server.tmm(&["favorite", "toggle", "gamma"]);
-    let rows = server.tmm(&["list"]);
+    server.tm(&["favorite", "toggle", "gamma"]);
+    let rows = server.tm(&["list"]);
     assert_eq!(names(&rows), ["gamma", "alpha", "beta"]);
     assert!(
         rows.lines()
@@ -265,13 +265,13 @@ fn rows_favorites_help_and_refresh() {
             .unwrap()
             .contains("gamma")
     );
-    server.tmm(&["favorite", "unstar", "gamma"]);
-    assert_eq!(names(&server.tmm(&["list"])), ["alpha", "beta", "gamma"]);
+    server.tm(&["favorite", "unstar", "gamma"]);
+    assert_eq!(names(&server.tm(&["list"])), ["alpha", "beta", "gamma"]);
 
-    assert_eq!(server.tmm(&["help"]), "", "first toggle hides the legend");
+    assert_eq!(server.tm(&["help"]), "", "first toggle hides the legend");
     assert!(server.state.join("snap.help").exists());
     assert!(
-        server.tmm(&["help"]).contains("ctrl-j/k move"),
+        server.tm(&["help"]).contains("ctrl-j/k move"),
         "second toggle restores it"
     );
     assert!(!server.state.join("snap.help").exists());
@@ -279,15 +279,12 @@ fn rows_favorites_help_and_refresh() {
     let snapshot = server.state.join("snap.txt");
     fs::write(&snapshot, "stale\n").unwrap();
     let idle = [("FZF_IDLE_TIME_MS", "1500")];
-    let refresh = || server.tmm_env(&["refresh"], &idle);
+    let refresh = || server.tm_env(&["refresh"], &idle);
     assert!(refresh().starts_with("reload-sync(cat "));
-    assert_eq!(
-        fs::read_to_string(&snapshot).unwrap(),
-        server.tmm(&["list"])
-    );
+    assert_eq!(fs::read_to_string(&snapshot).unwrap(), server.tm(&["list"]));
     assert_eq!(refresh(), "", "unchanged rows do not reload");
     assert_eq!(
-        server.tmm_env(&["refresh"], &[("FZF_IDLE_TIME_MS", "200")]),
+        server.tm_env(&["refresh"], &[("FZF_IDLE_TIME_MS", "200")]),
         "",
         "no reload while the user is moving"
     );
@@ -300,7 +297,7 @@ fn inline_prompts_and_closing() {
     };
     let alpha = server.session_id("alpha");
 
-    let opened = server.tmm(&["prompt", "create", &alpha]);
+    let opened = server.tm(&["prompt", "create", &alpha]);
     assert!(
         opened.contains("change-prompt(create> )") && opened.contains("change-query()"),
         "{opened}"
@@ -329,7 +326,7 @@ fn inline_prompts_and_closing() {
         "an empty name creates nothing: {nothing}"
     );
 
-    let opened = server.tmm(&["prompt", "rename", &alpha]);
+    let opened = server.tm(&["prompt", "rename", &alpha]);
     assert!(
         opened.contains("change-prompt(rename> )") && opened.contains("change-query(alpha)"),
         "prefilled: {opened}"
@@ -341,72 +338,72 @@ fn inline_prompts_and_closing() {
     );
 
     let delta = server.session_id("delta");
-    let closed = server.tmm(&["close", &delta]);
+    let closed = server.tm(&["close", &delta]);
     assert!(
         closed.starts_with("reload-sync("),
         "closing needs no confirmation: {closed}"
     );
     assert!(!server.sessions().contains(&"delta".to_string()));
-    let missing = server.tmm(&["close", "$999"]);
-    assert!(missing.starts_with("change-header(tmm:"), "{missing}");
+    let missing = server.tm(&["close", "$999"]);
+    assert!(missing.starts_with("change-header(tm:"), "{missing}");
 
     assert!(
         server
-            .tmm(&["mode", "toggle"])
+            .tm(&["mode", "toggle"])
             .starts_with("change-prompt(windows> )+reload-sync(")
     );
     assert!(
         server
-            .tmm(&["mode", "toggle"])
+            .tm(&["mode", "toggle"])
             .starts_with("change-prompt(projects> )+reload-sync(")
     );
     assert!(
         server
-            .tmm(&["mode", "toggle"])
+            .tm(&["mode", "toggle"])
             .starts_with("change-prompt(sessions> )+reload-sync(")
     );
 
     // fzf hands over an empty {1} when nothing matches the filter; tmux would
     // read that as the current session, so the row keys must do nothing.
     let before = server.sessions();
-    assert_eq!(server.tmm(&["close", ""]), "");
-    assert_eq!(server.tmm(&["prompt", "rename", ""]), "");
-    assert_eq!(server.tmm(&["preview", ""]), "");
-    server.tmm(&["preview-next", ""]);
+    assert_eq!(server.tm(&["close", ""]), "");
+    assert_eq!(server.tm(&["prompt", "rename", ""]), "");
+    assert_eq!(server.tm(&["preview", ""]), "");
+    server.tm(&["preview-next", ""]);
     assert_eq!(server.sessions(), before);
 
     // The filter typed before a prompt comes back afterwards.
     let omega = server.session_id("omega");
-    let opened = server.tmm_env(&["prompt", "rename", &omega], &[("FZF_QUERY", "ome")]);
+    let opened = server.tm_env(&["prompt", "rename", &omega], &[("FZF_QUERY", "ome")]);
     assert!(opened.contains("change-query(omega)"), "{opened}");
-    let cancelled = server.tmm(&["esc"]);
+    let cancelled = server.tm(&["esc"]);
     assert!(cancelled.contains("change-query(ome)"), "{cancelled}");
-    server.tmm_env(&["prompt", "rename", &omega], &[("FZF_QUERY", "ome")]);
-    let answered = server.tmm_env(&["enter"], &[("FZF_QUERY", "omega")]);
+    server.tm_env(&["prompt", "rename", &omega], &[("FZF_QUERY", "ome")]);
+    let answered = server.tm_env(&["enter"], &[("FZF_QUERY", "omega")]);
     assert!(answered.contains("change-query(ome)"), "{answered}");
 
     // Tab cancels an open prompt along with switching the mode.
-    server.tmm(&["prompt", "rename", &omega]);
-    let switched = server.tmm(&["mode", "toggle"]);
+    server.tm(&["prompt", "rename", &omega]);
+    let switched = server.tm(&["mode", "toggle"]);
     assert!(
         switched.contains("change-prompt(windows> )") && switched.contains("change-header()"),
         "{switched}"
     );
     assert!(!server.state.join("snap.prompt").exists());
-    server.tmm(&["mode", "sessions"]);
+    server.tm(&["mode", "sessions"]);
 
     assert_eq!(
-        server.tmm(&["enter"]).trim(),
+        server.tm(&["enter"]).trim(),
         "accept",
         "Enter outside a prompt accepts the row"
     );
     assert_eq!(
-        server.tmm(&["esc"]).trim(),
+        server.tm(&["esc"]).trim(),
         "abort",
         "Esc outside a prompt closes the popup"
     );
-    server.tmm(&["prompt", "rename", &server.session_id("omega")]);
-    let cancelled = server.tmm(&["esc"]);
+    server.tm(&["prompt", "rename", &server.session_id("omega")]);
+    let cancelled = server.tm(&["esc"]);
     assert!(
         cancelled.contains("change-header()") && cancelled.contains("enable-search"),
         "{cancelled}"
@@ -417,14 +414,14 @@ fn inline_prompts_and_closing() {
     );
 
     // The tree hides a window's session; filtering shows the breadcrumbs.
-    assert_eq!(server.tmm(&["with-nth"]).trim(), "3,5,6");
-    let filtering = server.tmm_env(&["with-nth"], &[("FZF_QUERY", "om")]);
+    assert_eq!(server.tm(&["with-nth"]).trim(), "3,5,6");
+    let filtering = server.tm_env(&["with-nth"], &[("FZF_QUERY", "om")]);
     assert_eq!(filtering.trim(), "4,5,6");
     // While a prompt borrows the query line, the filter it saved decides.
-    server.tmm(&["prompt", "rename", &server.session_id("omega")]);
-    let typing = server.tmm_env(&["with-nth"], &[("FZF_QUERY", "omeg")]);
+    server.tm(&["prompt", "rename", &server.session_id("omega")]);
+    let typing = server.tm_env(&["with-nth"], &[("FZF_QUERY", "omeg")]);
     assert_eq!(typing.trim(), "3,5,6");
-    server.tmm(&["esc"]);
+    server.tm(&["esc"]);
 }
 
 #[test]
@@ -436,7 +433,7 @@ fn windows_mode_lists_manages_and_previews_windows() {
     server.tmux(&["new-session", "-d", "-s", "beta", "-x", "120", "-y", "40"]);
     fs::write(server.state.join("snap.mode"), "windows").unwrap();
 
-    let rows = server.tmm(&["list"]);
+    let rows = server.tm(&["list"]);
     let ids: Vec<String> = rows
         .lines()
         .map(|line| line.split('\t').next().unwrap().to_string())
@@ -468,15 +465,15 @@ fn windows_mode_lists_manages_and_previews_windows() {
     assert_eq!(plain(editor[2]).trim(), "└ 1   editor");
 
     let editor_id = ids[2].clone();
-    let preview = server.tmm(&["preview", &editor_id]);
+    let preview = server.tm(&["preview", &editor_id]);
     assert!(preview.contains("alpha  ·  1: editor"), "{preview:?}");
-    server.tmm(&["preview-next", &editor_id]);
+    server.tm(&["preview-next", &editor_id]);
     assert!(
-        server.tmm(&["preview", &editor_id]).contains("1: editor"),
+        server.tm(&["preview", &editor_id]).contains("1: editor"),
         "window rows do not cycle"
     );
 
-    let opened = server.tmm(&["prompt", "rename", &editor_id]);
+    let opened = server.tm(&["prompt", "rename", &editor_id]);
     assert!(
         opened.contains("change-query(editor)") && opened.contains("Rename window 1: editor"),
         "{opened}"
@@ -488,7 +485,7 @@ fn windows_mode_lists_manages_and_previews_windows() {
     );
 
     let beta = server.session_id("beta");
-    let opened = server.tmm(&["prompt", "create", &beta]);
+    let opened = server.tm(&["prompt", "create", &beta]);
     assert!(opened.contains("New window in beta"), "{opened}");
     server.answer("create", &beta, "logs");
     assert_eq!(
@@ -509,13 +506,13 @@ fn windows_mode_lists_manages_and_previews_windows() {
     );
 
     server.tmux(&["split-window", "-d", "-t", &editor_id]);
-    let listed = server.tmm(&["list"]);
+    let listed = server.tm(&["list"]);
     let split: Vec<&str> = listed.lines().nth(2).unwrap().split('\t').collect();
     assert!(split[5].contains("2 panes"), "{:?}", split[5]);
 
     assert!(
         server
-            .tmm(&["close", &editor_id])
+            .tm(&["close", &editor_id])
             .starts_with("reload-sync(")
     );
     assert_eq!(
@@ -527,7 +524,7 @@ fn windows_mode_lists_manages_and_previews_windows() {
     );
     let last = server.tmux(&["display-message", "-p", "-t", "alpha:0", "#{window_id}"]);
     assert!(
-        server.tmm(&["close", &last]).starts_with("reload-sync("),
+        server.tm(&["close", &last]).starts_with("reload-sync("),
         "closing the last window"
     );
     assert!(
@@ -539,16 +536,16 @@ fn windows_mode_lists_manages_and_previews_windows() {
     assert!(renamed.contains("reload-sync("), "{renamed}");
     assert!(server.sessions().contains(&"gamma".to_string()));
 
-    server.tmm(&["mode", "sessions"]);
+    server.tm(&["mode", "sessions"]);
     assert!(!server.state.join("snap.mode").exists());
     assert_eq!(
-        server.tmm(&["list"]).lines().count(),
+        server.tm(&["list"]).lines().count(),
         1,
         "sessions mode again, alpha gone"
     );
-    server.tmm(&["mode", "windows"]);
+    server.tm(&["mode", "windows"]);
     assert_eq!(
-        server.tmm(&["list"]).lines().count(),
+        server.tm(&["list"]).lines().count(),
         4,
         "gamma and its three windows"
     );
@@ -564,7 +561,7 @@ fn preview_cycles_without_changing_the_active_window() {
     let alpha = server.session_id("alpha");
     let beta = server.session_id("beta");
 
-    let preview = server.tmm(&["preview", &alpha]);
+    let preview = server.tm(&["preview", &alpha]);
     assert!(
         preview.contains("alpha") && preview.contains("0:") && !preview.contains("\x1b[2J"),
         "{preview:?}"
@@ -574,29 +571,29 @@ fn preview_cycles_without_changing_the_active_window() {
         "no trailing newline, or fzf shows a scroll indicator"
     );
 
-    let beta_preview = || server.tmm(&["preview", &beta]);
-    server.tmm(&["preview-next", &beta]);
+    let beta_preview = || server.tm(&["preview", &beta]);
+    server.tm(&["preview-next", &beta]);
     assert!(beta_preview().contains("1:"), "moves on");
-    server.tmm(&["preview-next", &beta]);
+    server.tm(&["preview-next", &beta]);
     assert!(beta_preview().contains("0:"), "wraps");
     assert_eq!(
         server.tmux(&["display-message", "-p", "-t", "beta:", "#{window_index}"]),
         "0",
         "tmux's active window is untouched"
     );
-    server.tmm(&["preview-next", &beta]);
+    server.tm(&["preview-next", &beta]);
     server.tmux(&["kill-window", "-t", "beta:1"]);
     assert!(
         beta_preview().contains("0:"),
         "a closed preview window falls back to the active one"
     );
     assert!(
-        server.tmm(&["preview", "$999"]).contains("Gone"),
+        server.tm(&["preview", "$999"]).contains("Gone"),
         "a vanished row previews a notice"
     );
 
     fs::write(server.state.join("snap.view"), "hide-preview").unwrap();
-    assert_eq!(server.tmm(&["view-return"]).trim(), "hide-preview");
+    assert_eq!(server.tm(&["view-return"]).trim(), "hide-preview");
     assert!(
         !server.state.join("snap.view").exists(),
         "the action is replayed once"
@@ -636,21 +633,21 @@ fn agent_activity_from_hooks_and_from_the_screen() {
     let pane = server.tmux(&["display-message", "-p", "-t", "alpha:1", "#{pane_id}"]);
     let pid = server.tmux(&["display-message", "-p", "-t", "alpha:1", "#{pane_pid}"]);
 
-    let activity = || server.tmm(&["activity"]).trim().to_string();
+    let activity = || server.tm(&["activity"]).trim().to_string();
     assert_eq!(
         activity(),
         r#"{"@0":"plain","@1":"waiting"}"#,
         "an agent with no busy hint is waiting"
     );
 
-    let record = || server.tmux(&["show-options", "-pqv", "-t", &pane, "@tmm-agent"]);
+    let record = || server.tmux(&["show-options", "-pqv", "-t", &pane, "@tm-agent"]);
     // The shipped hooks pass a JSON payload on stdin; the event may also be
     // named on the command line.
     let hook = |event: &str, on_stdin: bool| {
         let command = if on_stdin {
-            format!("printf '{{\"hook_event_name\":\"{event}\"}}' | {TMM} hook claude")
+            format!("printf '{{\"hook_event_name\":\"{event}\"}}' | {TM} hook claude")
         } else {
-            format!("{TMM} hook claude {event}")
+            format!("{TM} hook claude {event}")
         };
         server.tmux(&["send-keys", "-t", &pane, &command, "Enter"]);
         assert!(
@@ -667,7 +664,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
     );
     assert_eq!(activity(), r#"{"@0":"plain","@1":"working"}"#);
     let session_dots = || {
-        let rows = server.tmm(&["list"]);
+        let rows = server.tm(&["list"]);
         rows.lines()
             .next()
             .unwrap()
@@ -703,7 +700,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         "-p",
         "-t",
         &pane,
-        "@tmm-agent",
+        "@tm-agent",
         r#"{"state":"waiting","pid":1,"started":"never","harness":"claude","event":"Stop"}"#,
     ]);
     assert_eq!(
@@ -734,17 +731,17 @@ fn projects_mode_lists_and_opens_directories() {
     server.tmux(&[
         "set",
         "-g",
-        "@tmm-projects",
+        "@tm-projects",
         &format!("{}:2", root.display()),
     ]);
     let root = fs::canonicalize(&root).unwrap();
 
-    server.tmm(&["mode", "projects"]);
+    server.tm(&["mode", "projects"]);
     assert_eq!(
         fs::read_to_string(server.state.join("snap.mode")).unwrap(),
         "projects"
     );
-    let rows = server.tmm(&["list"]);
+    let rows = server.tm(&["list"]);
     assert_eq!(
         names(&rows),
         ["alpha-app", "alpha-app", "beta_app", "nested"],
@@ -771,26 +768,26 @@ fn projects_mode_lists_and_opens_directories() {
     // Enter on a project row: find or create its session.
     let top = root.join("alpha-app");
     let id = server
-        .tmm(&["open", top.to_str().unwrap()])
+        .tm(&["open", top.to_str().unwrap()])
         .trim()
         .to_string();
     assert!(id.starts_with('$'), "{id}");
     assert!(server.sessions().contains(&"alpha-app".to_string()));
     assert_eq!(
-        server.tmm(&["open", top.to_str().unwrap()]).trim(),
+        server.tm(&["open", top.to_str().unwrap()]).trim(),
         id,
         "opening again finds the same session"
     );
     // A namesake started elsewhere gets its parent's name appended.
     let nested = root.join("nested/alpha-app");
-    server.tmm(&["open", nested.to_str().unwrap()]);
+    server.tm(&["open", nested.to_str().unwrap()]);
     assert!(
         server.sessions().contains(&"alpha-app-nested".to_string()),
         "{:?}",
         server.sessions()
     );
 
-    let rows = server.tmm(&["list"]);
+    let rows = server.tm(&["list"]);
     assert_eq!(
         names(&rows),
         ["alpha-app", "alpha-app-nested", "beta_app", "nested"],
@@ -806,8 +803,8 @@ fn projects_mode_lists_and_opens_directories() {
     assert_eq!(first[4].matches('●').count(), 0, "no agent, no dot");
     assert!(plain(first[5]).contains("1 window"), "{:?}", first[5]);
 
-    server.tmm(&["favorite", "toggle", "beta_app"]);
-    let rows = server.tmm(&["list"]);
+    server.tm(&["favorite", "toggle", "beta_app"]);
+    let rows = server.tm(&["list"]);
     assert_eq!(
         names(&rows),
         ["beta_app", "alpha-app", "alpha-app-nested", "nested"],
@@ -822,7 +819,7 @@ fn projects_mode_lists_and_opens_directories() {
     let beta = root.join("beta.app");
     fs::create_dir(beta.join("src")).unwrap();
     fs::write(beta.join("notes.md"), "").unwrap();
-    let preview = server.tmm_env(
+    let preview = server.tm_env(
         &["preview", beta.to_str().unwrap()],
         &[("FZF_PREVIEW_COLUMNS", "512")],
     );
@@ -832,21 +829,18 @@ fn projects_mode_lists_and_opens_directories() {
             && preview.contains("notes.md"),
         "{preview:?}"
     );
-    assert_eq!(server.tmm(&["close", beta.to_str().unwrap()]), "");
-    assert_eq!(
-        server.tmm(&["prompt", "rename", beta.to_str().unwrap()]),
-        ""
-    );
-    server.tmm(&["preview-next", beta.to_str().unwrap()]);
+    assert_eq!(server.tm(&["close", beta.to_str().unwrap()]), "");
+    assert_eq!(server.tm(&["prompt", "rename", beta.to_str().unwrap()]), "");
+    server.tm(&["preview-next", beta.to_str().unwrap()]);
     assert!(server.sessions().contains(&"alpha-app".to_string()));
     // An open project's row is its session's row, so ctrl-x closes it.
-    assert!(server.tmm(&["close", &id]).starts_with("reload-sync("));
+    assert!(server.tm(&["close", &id]).starts_with("reload-sync("));
     assert!(!server.sessions().contains(&"alpha-app".to_string()));
 
     // tab cycles sessions → windows → projects → sessions.
-    server.tmm(&["mode", "sessions"]);
+    server.tm(&["mode", "sessions"]);
     for prompt in ["windows> ", "projects> ", "sessions> "] {
-        let switched = server.tmm(&["mode", "toggle"]);
+        let switched = server.tm(&["mode", "toggle"]);
         assert!(
             switched.contains(&format!("change-prompt({prompt})")),
             "{switched}"
@@ -861,7 +855,7 @@ fn shell_runs_keep_nothing() {
     };
     server.tmux(&["new-session", "-d", "-s", "beta", "-x", "120", "-y", "40"]);
     server.tmux(&["new-window", "-d", "-t", "beta:"]);
-    let shell = |args: &[&str]| server.tmm_shell(args);
+    let shell = |args: &[&str]| server.tm_shell(args);
     let alpha = server.session_id("alpha");
     let beta = server.session_id("beta");
 
@@ -887,14 +881,14 @@ fn shell_runs_keep_nothing() {
         opened.starts_with("change-prompt(rename> )+change-query(beta)"),
         "{opened}"
     );
-    let entered = server.run_tmm(&["enter"], &[("FZF_QUERY", "stolen")]);
+    let entered = server.run_tm(&["enter"], &[("FZF_QUERY", "stolen")]);
     assert_eq!(entered.trim(), "accept", "no prompt outlives its run");
     assert_eq!(server.sessions(), ["alpha", "beta"]);
     assert_eq!(shell(&["esc"]).trim(), "abort");
     assert_eq!(shell(&["help"]), "", "a fresh popup shows the legend");
     assert_eq!(shell(&["help"]), "", "so every run hides it");
     assert_eq!(shell(&["with-nth"]).trim(), "3,5,6");
-    let filtering = server.run_tmm(&["with-nth"], &[("FZF_QUERY", "be")]);
+    let filtering = server.run_tm(&["with-nth"], &[("FZF_QUERY", "be")]);
     assert_eq!(filtering.trim(), "4,5,6");
     shell(&["preview-next", &beta]);
     let title = plain(&shell(&["preview", &beta]));
@@ -915,12 +909,12 @@ fn shell_runs_keep_nothing() {
     let opened = shell(&["open", project.to_str().unwrap()]);
     assert!(opened.starts_with('$'), "{opened}");
     assert!(shell(&["close", opened.trim()]).starts_with("reload-sync("));
-    assert!(shell(&["close", "$999"]).starts_with("change-header(tmm:"));
+    assert!(shell(&["close", "$999"]).starts_with("change-header(tm:"));
     assert_eq!(server.sessions(), ["alpha", "beta"]);
     assert!(shell(&["preview", &alpha]).contains("alpha"));
 
-    // An empty TMM_SNAPSHOT is no popup either.
-    let emptied = server.run_tmm(&["mode", "windows"], &[("TMM_SNAPSHOT", "")]);
+    // An empty TM_SNAPSHOT is no popup either.
+    let emptied = server.run_tm(&["mode", "windows"], &[("TM_SNAPSHOT", "")]);
     assert!(emptied.starts_with("change-prompt(windows> )"), "{emptied}");
 
     assert_eq!(

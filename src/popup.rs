@@ -1,7 +1,7 @@
 //! One open popup: the row snapshot fzf is showing and the state kept
 //! beside it.
 //!
-//! `switch` creates the snapshot and exports its path as `TMM_SNAPSHOT`, so
+//! `switch` creates the snapshot and exports its path as `TM_SNAPSHOT`, so
 //! every subcommand fzf runs finds the same popup through [`Popup::current`].
 //! Small bits of state live in *sidecars*: files next to the snapshot, one
 //! per [`Sidecar`] variant, so they survive each subcommand being a fresh
@@ -10,11 +10,11 @@
 //! Every piece of this state has an owner and goes with it. A popup's files
 //! belong to its `switch` process, whose pid names them: `cleanup` removes
 //! them when it exits, and the next popup's [`Popup::create`] when it was
-//! killed. Run from a shell, with no `TMM_SNAPSHOT`, a subcommand is the
+//! killed. Run from a shell, with no `TM_SNAPSHOT`, a subcommand is the
 //! first key of a popup of its own that lives in memory as long as the
 //! process: it starts empty, and nothing reaches the disk. To drive several
 //! keys against one popup (prompt, then enter), name a snapshot you own in
-//! `TMM_SNAPSHOT`, as the integration tests do.
+//! `TM_SNAPSHOT`, as the integration tests do.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -103,7 +103,7 @@ impl Sidecar {
 /// Where a popup keeps its snapshot and sidecars.
 enum Store {
     /// Files named after the snapshot: a popup `switch` opened, or one whose
-    /// snapshot the caller named in `TMM_SNAPSHOT`, and so owns.
+    /// snapshot the caller named in `TM_SNAPSHOT`, and so owns.
     Files(PathBuf),
     /// Sidecars by extension, in this process's memory: a run from a shell.
     /// It has no snapshot, so no rows on show.
@@ -115,7 +115,7 @@ pub struct Popup {
 }
 
 impl Popup {
-    /// The popup whose fzf runs us, from `TMM_SNAPSHOT`; from a shell, a
+    /// The popup whose fzf runs us, from `TM_SNAPSHOT`; from a shell, a
     /// fresh one that lives as long as this process and never touches the
     /// disk.
     pub fn current() -> Popup {
@@ -290,7 +290,7 @@ fn alive(pid: u32) -> bool {
 
 /// Keep only the files of popups that are open: each file whose owner is
 /// dead goes, sidecars without a snapshot included, and so does any other
-/// file in `run` not named after a `switch` pid (tmm makes no directories
+/// file in `run` not named after a `switch` pid (tm makes no directories
 /// there, and leaves any it finds). `me` is the popup being created, so
 /// whatever a dead process with the same pid left cannot become its state.
 fn remove_stale(run: &Path, me: u32) {
@@ -312,7 +312,7 @@ mod tests {
 
     /// A fresh directory under the system's temp dir, removed by the caller.
     fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tmm-{tag}-{}", process::id()));
+        let dir = std::env::temp_dir().join(format!("tm-{tag}-{}", process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
