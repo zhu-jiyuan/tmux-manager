@@ -7,7 +7,10 @@
 在 tmux 外运行 `tm` 可以选一个项目，直接进入它的 tmux session。
 Rust 单二进制，每个按键只跑一次几毫秒的子命令。
 
-![tm 弹窗](docs/tm.svg)
+![tm 演示：带 agent 圆点的窗口列表、跳到等待中的 Claude、打开一个项目](docs/tm.gif)
+
+`prefix + w` 列出窗口并预览，agent 在工作的窗口亮绿点，在等你的亮黄点；
+输入 `learn` 回车，跳到等待中的 Claude；`prefix + f` 把 `~/workspace/tmux-manager` 打开成新 session。
 
 ## 安装
 

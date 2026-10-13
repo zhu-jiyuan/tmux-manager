@@ -8,7 +8,11 @@ where Claude Code or Codex is working or waiting for you. Outside tmux, `tm`
 picks a project and starts tmux in it. A single Rust binary; every key runs
 one subcommand that takes a few milliseconds.
 
-![tm popup](docs/tm.svg)
+![tm demo: the window list with agent dots, jumping to a waiting Claude, opening a project](docs/tm.gif)
+
+`prefix + w` lists the windows, with a preview of each and a dot where an
+agent works (green) or waits (yellow); typing `learn` and `Enter` jumps to the
+waiting Claude; `prefix + f` opens `~/workspace/tmux-manager` as a new session.
 
 ## Install
 
