@@ -3,15 +3,48 @@
 //! Every call here is one subprocess (about 4 ms), so callers pack all the
 //! fields they need into a single format string instead of asking twice.
 //! Which server we talk to comes from the `TMUX` environment variable, exactly
-//! as it would for a user typing `tmux` inside a session.
+//! as it would for a user typing `tmux` inside a session; outside tmux it is
+//! the default server, which may not be running yet.
 
-use std::process::Command;
+use std::env;
+use std::process::{Command, Output};
 
 use anyhow::{Result, bail};
 
+/// Whether tm runs inside tmux, so a client is there to switch.
+pub fn inside() -> bool {
+    env::var_os("TMUX").is_some_and(|value| !value.is_empty())
+}
+
+/// tmux with `args`. `-u` because only inside tmux does it take the caller
+/// for UTF-8 regardless of the locale; otherwise it may print tabs and
+/// names in other scripts as `_`.
+fn tmux(args: &[&str]) -> Command {
+    let mut command = Command::new("tmux");
+    command.arg("-u").args(args);
+    command
+}
+
 /// Run tmux and return its stdout, or an error carrying tmux's stderr.
 pub fn run(args: &[&str]) -> Result<String> {
-    let output = Command::new("tmux").args(args).output()?;
+    finish(args, tmux(args).output()?)
+}
+
+/// Like [`run`], for a listing: with no server running there is nothing to
+/// list. Outside tmux none runs until the first session starts one.
+pub fn list(args: &[&str]) -> Result<String> {
+    let output = tmux(args).output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // tmux's words for no socket, and for a socket nobody listens on.
+    if !output.status.success()
+        && (stderr.starts_with("error connecting to ") || stderr.starts_with("no server running"))
+    {
+        return Ok(String::new());
+    }
+    finish(args, output)
+}
+
+fn finish(args: &[&str], output: Output) -> Result<String> {
     if !output.status.success() {
         bail!(
             "tmux {}: {}",
@@ -63,9 +96,10 @@ pub struct Pane {
 }
 
 /// Every pane on the server in one call, sessions and windows in tmux's
-/// order. Names come last because they may contain anything, even tabs.
+/// order; none with no server. Names come last because they may contain
+/// anything, even tabs.
 pub fn panes() -> Result<Vec<Pane>> {
-    run(&[
+    list(&[
         "list-panes",
         "-a",
         "-F",

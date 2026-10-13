@@ -4,6 +4,10 @@
 //! A project row's id is its absolute path. No session (`$n`) or window
 //! (`@n`) id looks like that, so the row keys know to leave it alone, and
 //! Enter knows to open it.
+//!
+//! The option lives in the user's tmux config, so outside tmux, before any
+//! server runs, only a server can read it. The picker asks once, as it
+//! opens, and keeps the answer for its keys (see [`capture`]).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -11,7 +15,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::popup::{Popup, Sidecar};
 use crate::{paths, tmux};
+
+const OPTION: &str = "@tm-projects";
 
 pub struct Project {
     /// Canonical, so it compares with a session's start directory.
@@ -66,9 +73,26 @@ pub fn free_name(path: &Path, taken: impl Fn(&str) -> bool) -> String {
     name
 }
 
+/// The option's value for a picker that is opening, kept in its
+/// `Projects` sidecar. `start-server` does nothing to a running server;
+/// with none, it starts one that reads the user's config, answers, and
+/// exits for want of a session, so the picker's keys must not ask again.
+pub fn capture(popup: &Popup) -> Result<String> {
+    let value = tmux::run_lossy(&["start-server", ";", "show-option", "-gqv", OPTION]);
+    popup.write(Sidecar::Projects, &value)?;
+    Ok(value)
+}
+
+/// The option's value: what the picker captured, else tmux's (from a shell).
+fn option(popup: &Popup) -> String {
+    popup
+        .read(Sidecar::Projects)
+        .unwrap_or_else(|| tmux::run_lossy(&["show-option", "-gqv", OPTION]))
+}
+
 /// The option's entries: a path, optionally with `:depth` (default 1).
-fn roots() -> Vec<(PathBuf, usize)> {
-    tmux::run_lossy(&["show-option", "-gqv", "@tm-projects"])
+fn roots(option: &str) -> Vec<(PathBuf, usize)> {
+    option
         .split_whitespace()
         .map(|entry| match entry.rsplit_once(':') {
             Some((path, depth))
@@ -104,9 +128,9 @@ fn walk(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 }
 
 /// Every project, each path once, in name order.
-pub fn scan() -> Vec<Project> {
+pub fn scan(popup: &Popup) -> Vec<Project> {
     let mut found = Vec::new();
-    for (root, depth) in roots() {
+    for (root, depth) in roots(&option(popup)) {
         walk(&root, depth, &mut found);
     }
     let mut seen = BTreeSet::new();
@@ -123,9 +147,9 @@ pub fn scan() -> Vec<Project> {
     projects
 }
 
-/// Every session: id, name, start directory.
+/// Every session: id, name, start directory. None with no server.
 fn sessions() -> Result<Vec<(String, String, PathBuf)>> {
-    Ok(tmux::run(&[
+    Ok(tmux::list(&[
         "list-sessions",
         "-F",
         "#{session_id}\t#{session_name}\t#{session_path}",
@@ -142,7 +166,8 @@ fn sessions() -> Result<Vec<(String, String, PathBuf)>> {
     .collect())
 }
 
-/// The session started in `dir`, or a new one made there; its id either way.
+/// The session started in `dir`, or a new one made there (starting the
+/// server if need be); its id either way.
 pub fn open(dir: &Path) -> Result<String> {
     let path = fs::canonicalize(dir).with_context(|| dir.display().to_string())?;
     if !path.is_dir() {

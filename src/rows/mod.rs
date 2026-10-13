@@ -23,7 +23,7 @@ use anyhow::Result;
 
 use crate::agent::{self, State};
 use crate::ansi::{Colour, faint, pad, tint, visible_width};
-use crate::popup::Mode;
+use crate::popup::{Mode, Popup};
 use crate::projects::Project;
 use crate::state::Switcher;
 use crate::tmux::{self, Pane};
@@ -63,7 +63,8 @@ impl Data {
     }
 }
 
-pub fn fetch(mode: Mode) -> Result<Data> {
+/// `popup` holds the project roots (see `projects::capture`).
+pub fn fetch(popup: &Popup, mode: Mode) -> Result<Data> {
     let panes = tmux::panes()?;
     let states = agent::states(&panes)?;
     let favorites = Switcher::load()?.favorites;
@@ -77,7 +78,7 @@ pub fn fetch(mode: Mode) -> Result<Data> {
                 session_dirs.insert(pane.session_id.clone(), dir);
             }
         }
-        projects = crate::projects::scan();
+        projects = crate::projects::scan(popup);
     }
     Ok(Data {
         panes,
@@ -104,8 +105,8 @@ pub fn build(data: &Data, mode: Mode) -> Vec<Row> {
 }
 
 /// The rows of a mode as fzf reads them: one line each, newline-terminated.
-pub fn text(mode: Mode) -> Result<String> {
-    let mut text = layout(&build(&fetch(mode)?, mode)).join("\n");
+pub fn text(popup: &Popup, mode: Mode) -> Result<String> {
+    let mut text = layout(&build(&fetch(popup, mode)?, mode)).join("\n");
     text.push('\n');
     Ok(text)
 }

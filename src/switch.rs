@@ -1,4 +1,6 @@
-//! The popup itself: build the fzf command line, run it, act on the choice.
+//! The picker itself: build the fzf command line, run it, act on the choice.
+//! `tm` with no subcommand runs it in its terminal: a tmux popup when a key
+//! opened it, else wherever the user typed `tm`, inside tmux or out.
 //!
 //! Keys follow fzf-lua's habits: typing filters right away, movement is
 //! `ctrl-j`/`ctrl-k`, everything else is a control key. Arrows and function
@@ -6,9 +8,10 @@
 //! `--bind` strings, so the only process alive while the user navigates is
 //! fzf itself; each key runs one short `tm` subcommand (see `actions`).
 //!
-//! The popup has three modes (see `popup::Mode`): sessions, windows and
+//! The picker has three modes (see `popup::Mode`): sessions, windows and
 //! projects. `prefix + s`, `prefix + w` and `prefix + f` pick the initial
-//! one and `tab` cycles.
+//! one, `tm` alone starts on the projects when there are any, and `tab`
+//! cycles.
 //!
 //! Window rows have two name columns (see `rows`): a tree for browsing and
 //! breadcrumbs for filtering. fzf cannot match text it does not show, so the
@@ -16,6 +19,7 @@
 
 use std::env;
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -54,14 +58,11 @@ fn binds(me: &str) -> Vec<String> {
     vec![
         "ctrl-f:half-page-down".to_string(),
         "ctrl-b:half-page-up".to_string(),
-        format!("tab:transform:{}", cmd("mode toggle")),
+        format!("tab:transform:{}", cmd("mode")),
         format!("ctrl-o:transform:{}", cmd("prompt create {1}")),
         format!("ctrl-r:transform:{}", cmd("prompt rename {1}")),
         format!("ctrl-x:transform:{}", cmd("close {1}")),
-        format!(
-            "ctrl-s:execute-silent({})+{reload}",
-            cmd("favorite toggle {2}")
-        ),
+        format!("ctrl-s:execute-silent({})+{reload}", cmd("favorite {2}")),
         format!(
             "ctrl-l:execute-silent({})+refresh-preview",
             cmd("preview-next {1}")
@@ -72,7 +73,7 @@ fn binds(me: &str) -> Vec<String> {
             cmd("preview-full {1}"),
             cmd("view-return")
         ),
-        format!("ctrl-/:transform-footer({})", cmd("help")),
+        format!("ctrl-/:transform-footer({})", cmd("legend")),
         format!("enter:transform:{}", cmd("enter")),
         format!("esc:transform:{}", cmd("esc")),
         format!("change:transform-with-nth:{}", cmd("with-nth")),
@@ -82,16 +83,43 @@ fn binds(me: &str) -> Vec<String> {
     ]
 }
 
-/// `prefix + s`, `w` or `f`. The popup closes the moment tm exits, so
-/// stderr would go unseen: a failure goes to the client's status line.
-pub fn run(client: &str, mode: Mode) {
-    if let Err(error) = open(client, mode) {
+/// Who gets the pick.
+enum Client {
+    /// A tmux client, which switches to it.
+    Tmux(String),
+    /// The terminal tm runs in, outside tmux, where tmux attaches to it.
+    Terminal,
+}
+
+/// `prefix + s`, `w` or `f`: the picker in a popup of `client`. The popup
+/// closes the moment tm exits, so stderr would go unseen: a failure goes to
+/// the client's status line.
+pub fn popup(client: &str, mode: Option<Mode>) {
+    if let Err(error) = open(&Client::Tmux(client.to_string()), mode) {
         message(client, &format!("tm: {error:#}"));
     }
 }
 
-/// Run the popup and switch the client to whatever the user picked.
-fn open(client: &str, mode: Mode) -> Result<()> {
+/// `tm` typed at a prompt: the picker in this terminal. Inside tmux the
+/// client showing this pane switches to the pick; outside, tm hands the
+/// terminal to `tmux attach`.
+pub fn here(mode: Option<Mode>) -> Result<()> {
+    let client = if tmux::inside() {
+        let name = tmux::run(&["display-message", "-p", "#{client_name}"])?;
+        if name.is_empty() {
+            bail!("no tmux client to switch");
+        }
+        Client::Tmux(name)
+    } else {
+        Client::Terminal
+    };
+    open(&client, mode)
+}
+
+/// Run the picker and take `client` to whatever the user picked. With no
+/// mode given it starts on the projects, or the sessions when there are no
+/// project roots.
+fn open(client: &Client, mode: Option<Mode>) -> Result<()> {
     let fzf_bin = fzf::locate().context("fzf not found (brew install fzf)")?;
     fzf::check_version(&fzf_bin)?;
     let popup = Popup::create()?;
@@ -112,15 +140,33 @@ fn open(client: &str, mode: Mode) -> Result<()> {
     let Some(target) = choice(output.status.code(), query, selected)? else {
         return Ok(());
     };
-    // A window id switches the client to its session and selects the window.
-    tmux::run(&["switch-client", "-c", client, "-t", &target])?;
-    Ok(())
+    // Either way a window id takes its session and selects the window.
+    match client {
+        Client::Tmux(name) => {
+            tmux::run(&["switch-client", "-c", name, "-t", &target])?;
+            Ok(())
+        }
+        Client::Terminal => {
+            // tmux takes over the terminal and tm's place; exec returns
+            // only if tmux could not be run.
+            let error = Command::new("tmux")
+                .args(["attach-session", "-t", &target])
+                .exec();
+            Err(error).context("running tmux attach-session")
+        }
+    }
 }
 
 /// Write the rows, run fzf on them, and hand back what it printed.
-fn pick(fzf_bin: &Path, client: &str, mode: Mode, popup: &Popup) -> Result<Output> {
+fn pick(fzf_bin: &Path, client: &Client, mode: Option<Mode>, popup: &Popup) -> Result<Output> {
+    let projects = projects::capture(popup)?;
+    let mode = mode.unwrap_or(if projects.trim().is_empty() {
+        Mode::Sessions
+    } else {
+        Mode::Projects
+    });
     popup.set_mode(mode)?;
-    let text = rows::text(mode)?;
+    let text = rows::text(popup, mode)?;
     popup.write_snapshot(&text)?;
 
     let me = fzf::me();
@@ -158,7 +204,9 @@ fn pick(fzf_bin: &Path, client: &str, mode: Mode, popup: &Popup) -> Result<Outpu
     for bind in binds(&me) {
         command.args(["--bind", &bind]);
     }
-    if mode == Mode::Windows {
+    if mode == Mode::Windows
+        && let Client::Tmux(client) = client
+    {
         // Query the opening client: the popup's TMUX_PANE can refer to a
         // different window.
         let clients = tmux::run_lossy(&[
@@ -207,8 +255,8 @@ fn client_row(clients: &str, client: &str, rows: &str) -> Option<usize> {
     Some(index + 1)
 }
 
-/// What fzf's exit code, query and selected row amount to: a target to
-/// switch to, created first when Enter meant "make this".
+/// What fzf's exit code, query and selected row amount to: a target to go
+/// to, created first when Enter meant "make this".
 fn choice(status: Option<i32>, query: &str, selected: Option<&str>) -> Result<Option<String>> {
     match (status, selected.and_then(RowId::parse)) {
         // A project row: its session, made in the directory if need be.
@@ -243,7 +291,7 @@ fn choice(status: Option<i32>, query: &str, selected: Option<&str>) -> Result<Op
 /// really showing. A mode given leaves the popup's snapshot alone.
 pub fn list(mode: Option<Mode>) -> Result<()> {
     let popup = Popup::current();
-    let text = rows::text(mode.unwrap_or_else(|| popup.mode()))?;
+    let text = rows::text(&popup, mode.unwrap_or_else(|| popup.mode()))?;
     if mode.is_none() && popup.exists() {
         popup.write_snapshot(&text)?;
     }
@@ -266,7 +314,7 @@ pub fn refresh() -> Result<()> {
     };
     let settings = || -> Result<_> { Ok((Switcher::load()?, popup.mode())) };
     let before = settings()?;
-    let text = rows::text(before.1)?;
+    let text = rows::text(&popup, before.1)?;
     if settings()? != before {
         // A key changed the favorites or the mode while we were computing;
         // it reloads on its own, and these rows would flash the old state.

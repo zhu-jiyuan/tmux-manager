@@ -4,8 +4,9 @@
 
 A personal tmux plugin: one fzf popup to switch between sessions and windows,
 create, rename and close them, with a green or yellow dot on each window
-where Claude Code or Codex is working or waiting for you. A single Rust
-binary; every key runs one subcommand that takes a few milliseconds.
+where Claude Code or Codex is working or waiting for you. Outside tmux, `tm`
+picks a project and starts tmux in it. A single Rust binary; every key runs
+one subcommand that takes a few milliseconds.
 
 ![tm popup](docs/tm.svg)
 
@@ -57,6 +58,14 @@ Options, set before the `run-shell` line: `@tm-session-key`,
 `@tm-window-key`, `@tm-project-key`, `@tm-projects`, `@tm-switch-width`,
 `@tm-switch-height`, `@tm-bin`.
 
+## From a shell
+
+`tm` opens the same list in the terminal, on the projects, or on the
+sessions when `@tm-projects` is unset; `--sessions`, `--windows` and
+`--projects` choose. Inside tmux, `Enter` switches to the pick. Outside, it
+attaches tmux to the pick, creating the session, and starting the tmux
+server, when there is none yet.
+
 ## Projects
 
 Point `@tm-projects` at the directories that hold your projects and
@@ -71,4 +80,5 @@ Each root is scanned one level deep, or `:N` levels; hidden directories are
 skipped. A session belongs to the directory it was started in, so a project
 opened some other way still shows as open. With no match, typing a path and
 pressing `Enter` opens that directory. Without this option `prefix + f`
-keeps its tmux meaning.
+keeps its tmux meaning. The option lives in your tmux config, so outside
+tmux, with no server running, `tm` starts one to read it.

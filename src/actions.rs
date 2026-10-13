@@ -44,47 +44,21 @@ fn arg(value: &str) -> String {
     format!("{open}{value}{close}")
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-pub enum FavoriteMode {
-    Star,
-    Unstar,
-    Toggle,
-}
-
-/// `ctrl-s`.
-pub fn favorite(mode: FavoriteMode, name: &str) -> Result<()> {
+/// `ctrl-s`: star the session, or unstar it.
+pub fn favorite(name: &str) -> Result<()> {
     let mut state = Switcher::load()?;
-    let star = match mode {
-        FavoriteMode::Star => true,
-        FavoriteMode::Unstar => false,
-        FavoriteMode::Toggle => !state.favorites.contains(name),
-    };
-    if star {
+    if !state.favorites.remove(name) {
         state.favorites.insert(name.to_string());
-    } else {
-        state.favorites.remove(name);
     }
     state.save()
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-pub enum ModeAction {
-    Sessions,
-    Windows,
-    Projects,
-    Toggle,
-}
-
-/// `tab`: move to the next mode, rename the prompt, reload the rows. An
-/// open prompt is cancelled, since its question was about the old list.
-pub fn mode(action: ModeAction) -> Result<()> {
+/// `tab`: move to `mode`, else the next one; rename the prompt, reload the
+/// rows. An open prompt is cancelled, since its question was about the old
+/// list.
+pub fn mode(mode: Option<Mode>) -> Result<()> {
     let popup = Popup::current();
-    let mode = match action {
-        ModeAction::Sessions => Mode::Sessions,
-        ModeAction::Windows => Mode::Windows,
-        ModeAction::Projects => Mode::Projects,
-        ModeAction::Toggle => popup.mode().next(),
-    };
+    let mode = mode.unwrap_or_else(|| popup.mode().next());
     popup.set_mode(mode)?;
     let back = match take_pending(&popup)? {
         Some(pending) => restore(&popup, &pending.query),
@@ -95,7 +69,7 @@ pub fn mode(action: ModeAction) -> Result<()> {
 }
 
 /// `ctrl-/`: an empty footer hides the legend.
-pub fn help() -> Result<()> {
+pub fn legend() -> Result<()> {
     let popup = Popup::current();
     if popup.has(Sidecar::Help) {
         popup.remove(Sidecar::Help)?;

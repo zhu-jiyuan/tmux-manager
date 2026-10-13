@@ -5,12 +5,51 @@
 //! not installed.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::Duration;
 
 const TM: &str = env!("CARGO_BIN_EXE_tm");
+
+/// fzf, as far as the picker can tell. It keeps the arguments and rows tm
+/// gave it next to itself (`fzf.args`, `fzf.rows`), prints `$TM_TEST_QUERY`
+/// for `--print-query`, then the row whose id is `$TM_TEST_PICK`; with no
+/// such row it exits 1, fzf's "no match". The real fzf would open the
+/// terminal running the tests.
+const FAKE_FZF: &str = r#"#!/bin/sh
+[ "$1" = --version ] && { echo 0.99.0; exit 0; }
+printf '%s\n' "$@" > "$0.args"
+cat > "$0.rows"
+printf '%s\n' "$TM_TEST_QUERY"
+awk -F '\t' -v pick="$TM_TEST_PICK" '$1 == pick { print; found = 1 } END { exit !found }' "$0.rows"
+"#;
+
+/// Put the fake fzf in `dir/bin`; a `PATH` that finds it first.
+fn fake_fzf(dir: &Path) -> String {
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fzf = bin.join("fzf");
+    fs::write(&fzf, FAKE_FZF).unwrap();
+    fs::set_permissions(&fzf, fs::Permissions::from_mode(0o755)).unwrap();
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// The picker as the fake fzf leaves it: `TM_TEST_PICK` names the row to
+/// pick, else Enter with `TM_TEST_QUERY` typed matched nothing.
+fn picker(command: &mut Command, dir: &Path, pick: &str, query: &str) -> Output {
+    command
+        .env("PATH", fake_fzf(dir))
+        .env("TM_TEST_PICK", pick)
+        .env("TM_TEST_QUERY", query)
+        .output()
+        .unwrap()
+}
 
 /// What fzf and a popup put in a callback's environment. A shell run has
 /// none of them, whatever the environment `cargo test` runs in.
@@ -84,9 +123,11 @@ impl Server {
         Some(server)
     }
 
+    /// tmux on this server. `-u`: without `TMUX` set and a UTF-8 locale it
+    /// prints tabs as `_`.
     fn tmux(&self, args: &[&str]) -> String {
         let output = Command::new("tmux")
-            .arg("-L")
+            .args(["-u", "-L"])
             .arg(&self.socket)
             .args(args)
             .output()
@@ -121,7 +162,8 @@ impl Server {
         self.run_tm(args, &[])
     }
 
-    fn run_tm(&self, args: &[&str], env: &[(&str, &str)]) -> String {
+    /// tm inside this server, with none of a popup's variables.
+    fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(TM);
         command
             .args(args)
@@ -130,6 +172,11 @@ impl Server {
         for var in POPUP_VARS {
             command.env_remove(var);
         }
+        command
+    }
+
+    fn run_tm(&self, args: &[&str], env: &[(&str, &str)]) -> String {
+        let mut command = self.command(args);
         for (key, value) in env {
             command.env(key, value);
         }
@@ -140,6 +187,62 @@ impl Server {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    /// Run the picker (`tm` and `args`) from a shell on this server, the
+    /// fake fzf picking the row whose id is `pick`, or with none, leaving
+    /// `query` typed. A failing picker fails the test with its stderr.
+    fn pick(&self, args: &[&str], pick: &str, query: &str) {
+        let output = picker(&mut self.command(args), &self.state, pick, query);
+        assert!(
+            output.status.success(),
+            "tm {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// What the picker last gave fzf: its arguments, one per line, and rows.
+    fn fzf(&self) -> (String, String) {
+        let read = |name: &str| fs::read_to_string(self.state.join("bin").join(name)).unwrap();
+        (read("fzf.args"), read("fzf.rows"))
+    }
+
+    /// A control-mode client on `session`, standing in for a person's
+    /// terminal.
+    fn attach(&self, session: &str) -> Client {
+        let child = Command::new("tmux")
+            .args(["-L", &self.socket, "-C", "attach", "-t", session])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        // Its drop reaps the process, even if it never shows up.
+        let mut client = Client {
+            child,
+            name: String::new(),
+        };
+        for _ in 0..30 {
+            client.name = self.tmux(&["list-clients", "-F", "#{client_name}"]);
+            if !client.name.is_empty() {
+                return client;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        panic!("the control client never attached");
+    }
+
+    /// `session:window index` the client looks at.
+    fn showing(&self, client: &Client) -> String {
+        let prefix = format!("{}\t", client.name);
+        self.tmux(&[
+            "list-clients",
+            "-F",
+            "#{client_name}\t#{session_name}:#{window_index}",
+        ])
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix).map(str::to_string))
+        .unwrap_or_default()
     }
 
     /// Open an inline prompt for `id` and answer it, as fzf would: the
@@ -165,6 +268,19 @@ impl Server {
             .lines()
             .map(str::to_string)
             .collect()
+    }
+}
+
+/// Holds its stdin open: control mode detaches on end of input.
+struct Client {
+    child: Child,
+    name: String,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -224,9 +340,9 @@ fn rows_favorites_help_and_refresh() {
     assert_eq!(server.tm(&["list"]), rows);
     assert_eq!(fs::read_to_string(&snapshot).unwrap(), rows);
     for mode in ["windows", "projects"] {
-        server.tm(&["mode", mode]);
+        server.tm(&["mode", &format!("--{mode}")]);
         let theirs = ids(&server.tm(&["list"]));
-        server.tm(&["mode", "sessions"]);
+        server.tm(&["mode", "--sessions"]);
         server.tm(&["list"]);
         let before = fs::read_to_string(&snapshot).unwrap();
         let flagged = server.tm(&["list", &format!("--{mode}")]);
@@ -248,7 +364,7 @@ fn rows_favorites_help_and_refresh() {
     );
     assert!(beta[5].contains("2 windows"));
 
-    server.tm(&["favorite", "toggle", "gamma"]);
+    server.tm(&["favorite", "gamma"]);
     let rows = server.tm(&["list"]);
     assert_eq!(names(&rows), ["gamma", "alpha", "beta"]);
     assert!(
@@ -265,13 +381,17 @@ fn rows_favorites_help_and_refresh() {
             .unwrap()
             .contains("gamma")
     );
-    server.tm(&["favorite", "unstar", "gamma"]);
-    assert_eq!(names(&server.tm(&["list"])), ["alpha", "beta", "gamma"]);
+    server.tm(&["favorite", "gamma"]);
+    assert_eq!(
+        names(&server.tm(&["list"])),
+        ["alpha", "beta", "gamma"],
+        "a second star takes it back"
+    );
 
-    assert_eq!(server.tm(&["help"]), "", "first toggle hides the legend");
+    assert_eq!(server.tm(&["legend"]), "", "first toggle hides the legend");
     assert!(server.state.join("snap.help").exists());
     assert!(
-        server.tm(&["help"]).contains("ctrl-j/k move"),
+        server.tm(&["legend"]).contains("ctrl-j/k move"),
         "second toggle restores it"
     );
     assert!(!server.state.join("snap.help").exists());
@@ -347,21 +467,13 @@ fn inline_prompts_and_closing() {
     let missing = server.tm(&["close", "$999"]);
     assert!(missing.starts_with("change-header(tm:"), "{missing}");
 
-    assert!(
-        server
-            .tm(&["mode", "toggle"])
-            .starts_with("change-prompt(windows> )+reload-sync(")
-    );
-    assert!(
-        server
-            .tm(&["mode", "toggle"])
-            .starts_with("change-prompt(projects> )+reload-sync(")
-    );
-    assert!(
-        server
-            .tm(&["mode", "toggle"])
-            .starts_with("change-prompt(sessions> )+reload-sync(")
-    );
+    for prompt in ["windows> ", "projects> ", "sessions> "] {
+        let switched = server.tm(&["mode"]);
+        assert!(
+            switched.starts_with(&format!("change-prompt({prompt})+reload-sync(")),
+            "{switched}"
+        );
+    }
 
     // fzf hands over an empty {1} when nothing matches the filter; tmux would
     // read that as the current session, so the row keys must do nothing.
@@ -384,13 +496,13 @@ fn inline_prompts_and_closing() {
 
     // Tab cancels an open prompt along with switching the mode.
     server.tm(&["prompt", "rename", &omega]);
-    let switched = server.tm(&["mode", "toggle"]);
+    let switched = server.tm(&["mode"]);
     assert!(
         switched.contains("change-prompt(windows> )") && switched.contains("change-header()"),
         "{switched}"
     );
     assert!(!server.state.join("snap.prompt").exists());
-    server.tm(&["mode", "sessions"]);
+    server.tm(&["mode", "--sessions"]);
 
     assert_eq!(
         server.tm(&["enter"]).trim(),
@@ -536,14 +648,14 @@ fn windows_mode_lists_manages_and_previews_windows() {
     assert!(renamed.contains("reload-sync("), "{renamed}");
     assert!(server.sessions().contains(&"gamma".to_string()));
 
-    server.tm(&["mode", "sessions"]);
+    server.tm(&["mode", "--sessions"]);
     assert!(!server.state.join("snap.mode").exists());
     assert_eq!(
         server.tm(&["list"]).lines().count(),
         1,
         "sessions mode again, alpha gone"
     );
-    server.tm(&["mode", "windows"]);
+    server.tm(&["mode", "--windows"]);
     assert_eq!(
         server.tm(&["list"]).lines().count(),
         4,
@@ -736,7 +848,7 @@ fn projects_mode_lists_and_opens_directories() {
     ]);
     let root = fs::canonicalize(&root).unwrap();
 
-    server.tm(&["mode", "projects"]);
+    server.tm(&["mode", "--projects"]);
     assert_eq!(
         fs::read_to_string(server.state.join("snap.mode")).unwrap(),
         "projects"
@@ -765,27 +877,32 @@ fn projects_mode_lists_and_opens_directories() {
         "the badge says where it lives"
     );
 
-    // Enter on a project row: find or create its session.
+    // Enter on a project row (prefix + f): its session, made in the
+    // directory, and the client goes there.
+    let client = server.attach("alpha");
+    let enter = |pick: &Path, query: &Path| {
+        let (pick, query) = (pick.to_str().unwrap(), query.to_str().unwrap());
+        server.pick(&["--client", &client.name, "--projects"], pick, query);
+    };
     let top = root.join("alpha-app");
-    let id = server
-        .tm(&["open", top.to_str().unwrap()])
-        .trim()
-        .to_string();
+    enter(&top, Path::new(""));
+    assert_eq!(server.showing(&client), "alpha-app:0");
+    let id = server.session_id("alpha-app");
     assert!(id.starts_with('$'), "{id}");
-    assert!(server.sessions().contains(&"alpha-app".to_string()));
     assert_eq!(
-        server.tm(&["open", top.to_str().unwrap()]).trim(),
-        id,
-        "opening again finds the same session"
+        server.tmux(&["display-message", "-p", "-t", &id, "#{session_path}"]),
+        top.to_str().unwrap()
     );
+    // A typed path that matches no row opens that directory: the same
+    // session, found by where it started.
+    server.tmux(&["switch-client", "-c", &client.name, "-t", "alpha"]);
+    enter(Path::new(""), &top);
+    assert_eq!(server.showing(&client), "alpha-app:0");
+    assert_eq!(server.sessions(), ["alpha", "alpha-app"]);
     // A namesake started elsewhere gets its parent's name appended.
     let nested = root.join("nested/alpha-app");
-    server.tm(&["open", nested.to_str().unwrap()]);
-    assert!(
-        server.sessions().contains(&"alpha-app-nested".to_string()),
-        "{:?}",
-        server.sessions()
-    );
+    enter(&nested, Path::new(""));
+    assert_eq!(server.showing(&client), "alpha-app-nested:0");
 
     let rows = server.tm(&["list"]);
     assert_eq!(
@@ -803,7 +920,7 @@ fn projects_mode_lists_and_opens_directories() {
     assert_eq!(first[4].matches('●').count(), 0, "no agent, no dot");
     assert!(plain(first[5]).contains("1 window"), "{:?}", first[5]);
 
-    server.tm(&["favorite", "toggle", "beta_app"]);
+    server.tm(&["favorite", "beta_app"]);
     let rows = server.tm(&["list"]);
     assert_eq!(
         names(&rows),
@@ -838,9 +955,9 @@ fn projects_mode_lists_and_opens_directories() {
     assert!(!server.sessions().contains(&"alpha-app".to_string()));
 
     // tab cycles sessions → windows → projects → sessions.
-    server.tm(&["mode", "sessions"]);
+    server.tm(&["mode", "--sessions"]);
     for prompt in ["windows> ", "projects> ", "sessions> "] {
-        let switched = server.tm(&["mode", "toggle"]);
+        let switched = server.tm(&["mode"]);
         assert!(
             switched.contains(&format!("change-prompt({prompt})")),
             "{switched}"
@@ -867,13 +984,13 @@ fn shell_runs_keep_nothing() {
     assert_eq!(shell(&["list", "--windows"]).lines().count(), 5);
     assert_eq!(shell(&["list", "--projects"]).trim(), "", "no roots set");
     for _ in 0..2 {
-        let toggled = shell(&["mode", "toggle"]);
+        let toggled = shell(&["mode"]);
         assert!(
             toggled.starts_with("change-prompt(windows> )+reload-sync("),
             "{toggled}"
         );
     }
-    shell(&["mode", "projects"]);
+    shell(&["mode", "--projects"]);
     assert_eq!(shell(&["list"]), sessions, "the mode went with its run");
 
     let opened = shell(&["prompt", "rename", &beta]);
@@ -885,8 +1002,8 @@ fn shell_runs_keep_nothing() {
     assert_eq!(entered.trim(), "accept", "no prompt outlives its run");
     assert_eq!(server.sessions(), ["alpha", "beta"]);
     assert_eq!(shell(&["esc"]).trim(), "abort");
-    assert_eq!(shell(&["help"]), "", "a fresh popup shows the legend");
-    assert_eq!(shell(&["help"]), "", "so every run hides it");
+    assert_eq!(shell(&["legend"]), "", "a fresh popup shows the legend");
+    assert_eq!(shell(&["legend"]), "", "so every run hides it");
     assert_eq!(shell(&["with-nth"]).trim(), "3,5,6");
     let filtering = server.run_tm(&["with-nth"], &[("FZF_QUERY", "be")]);
     assert_eq!(filtering.trim(), "4,5,6");
@@ -901,25 +1018,160 @@ fn shell_runs_keep_nothing() {
     assert!(shell(&["activity"]).starts_with('{'));
 
     // What a person asks for from a shell does happen.
-    shell(&["favorite", "star", "beta"]);
+    shell(&["favorite", "beta"]);
     assert_eq!(names(&shell(&["list"])), ["beta", "alpha"]);
-    shell(&["favorite", "unstar", "beta"]);
-    let project = server.state.join("proj");
-    fs::create_dir(&project).unwrap();
-    let opened = shell(&["open", project.to_str().unwrap()]);
-    assert!(opened.starts_with('$'), "{opened}");
-    assert!(shell(&["close", opened.trim()]).starts_with("reload-sync("));
+    shell(&["favorite", "beta"]);
+    server.tmux(&["new-session", "-d", "-s", "gone"]);
+    assert!(shell(&["close", &server.session_id("gone")]).starts_with("reload-sync("));
     assert!(shell(&["close", "$999"]).starts_with("change-header(tm:"));
     assert_eq!(server.sessions(), ["alpha", "beta"]);
     assert!(shell(&["preview", &alpha]).contains("alpha"));
 
     // An empty TM_SNAPSHOT is no popup either.
-    let emptied = server.run_tm(&["mode", "windows"], &[("TM_SNAPSHOT", "")]);
+    let emptied = server.run_tm(&["mode", "--windows"], &[("TM_SNAPSHOT", "")]);
     assert!(emptied.starts_with("change-prompt(windows> )"), "{emptied}");
 
     assert_eq!(
         files(&server.state),
-        ["proj", "switcher.json"],
+        ["switcher.json"],
         "only the stars reach the disk"
     );
+}
+
+#[test]
+fn the_picker_takes_the_client_to_the_pick() {
+    let Some(server) = Server::start("picker") else {
+        return;
+    };
+    server.tmux(&["new-session", "-d", "-s", "beta", "-x", "120", "-y", "40"]);
+    server.tmux(&["new-window", "-d", "-t", "beta:"]);
+    let client = server.attach("alpha");
+    let beta = server.session_id("beta");
+
+    // `tm` at a prompt inside tmux: the client showing the session switches.
+    // With no project roots it starts on the sessions.
+    server.pick(&[], &beta, "");
+    assert_eq!(server.showing(&client), "beta:0");
+    let (args, rows) = server.fzf();
+    assert!(args.contains("\nsessions> \n"), "{args}");
+    assert_eq!(names(&rows), ["alpha", "beta"]);
+
+    // A window row takes the client to the window.
+    let window = server.tmux(&["display-message", "-p", "-t", "beta:1", "#{window_id}"]);
+    server.pick(&["--windows"], &window, "");
+    assert_eq!(server.showing(&client), "beta:1");
+    // Opened for a client, the window list starts on the window it shows.
+    server.pick(&["--client", &client.name, "--windows"], "", "");
+    let (args, rows) = server.fzf();
+    let at = rows
+        .lines()
+        .position(|row| row.starts_with(&window))
+        .unwrap();
+    assert!(args.contains(&format!("load:pos({})", at + 1)), "{args}");
+    assert_eq!(server.showing(&client), "beta:1", "nothing picked");
+
+    // Enter on no match makes the session it names.
+    server.pick(&["--client", &client.name], "", "gamma");
+    assert_eq!(server.showing(&client), "gamma:0");
+    assert_eq!(server.sessions(), ["alpha", "beta", "gamma"]);
+
+    // Popup or prompt, the picker leaves no file behind.
+    assert_eq!(files(&server.state.join("run")), Vec::<String>::new());
+}
+
+/// A directory standing in for a machine with no tmux running: a home whose
+/// tmux config names the project roots, and `TMUX_TMPDIR` for the sockets.
+/// Dropping it stops whatever server tm started there.
+struct Outside {
+    dir: PathBuf,
+}
+
+impl Outside {
+    fn tmux(&self, args: &[&str]) -> String {
+        let output = Command::new("tmux")
+            .args(args)
+            .env_remove("TMUX")
+            .env("TMUX_TMPDIR", &self.dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string()
+    }
+
+    /// `tm` typed in a terminal outside tmux, the fake fzf picking `pick`
+    /// or leaving `query` typed. Its stdin is not a terminal, so the
+    /// `tmux attach` that tm hands over to fails, and says so.
+    fn tm(&self, pick: &str, query: &str) -> Output {
+        let mut command = Command::new(TM);
+        command
+            .env_remove("TMUX")
+            .env_remove("XDG_CONFIG_HOME")
+            .env("TMUX_TMPDIR", &self.dir)
+            .env("HOME", self.dir.join("home"))
+            .env("TM_STATE_DIR", self.dir.join("state"));
+        for var in POPUP_VARS {
+            command.env_remove(var);
+        }
+        let output = picker(&mut command, &self.dir, pick, query);
+        assert!(
+            !output.status.success()
+                && String::from_utf8_lossy(&output.stderr).contains("not a terminal"),
+            "tm did not hand over to tmux attach: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+}
+
+impl Drop for Outside {
+    fn drop(&mut self) {
+        self.tmux(&["kill-server"]);
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn outside_tmux_tm_starts_tmux_on_the_pick() {
+    if Command::new("tmux").arg("-V").output().is_err() {
+        eprintln!("tmux is not installed; skipping");
+        return;
+    }
+    // A short path: a socket's must fit in about a hundred bytes.
+    let dir = std::env::temp_dir().join(format!("tm-out-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let outside = Outside { dir: dir.clone() };
+    fs::create_dir_all(dir.join("home")).unwrap();
+    fs::create_dir_all(dir.join("projects/web")).unwrap();
+    let root = fs::canonicalize(dir.join("projects")).unwrap();
+    fs::write(
+        dir.join("home/.tmux.conf"),
+        format!("set -g @tm-projects '{}'\n", root.display()),
+    )
+    .unwrap();
+    let fzf = |name: &str| fs::read_to_string(dir.join("bin").join(name)).unwrap();
+    assert_eq!(outside.tmux(&["list-sessions"]), "", "no server yet");
+
+    // With no server, tm starts one to read the roots from the config,
+    // lists the projects, and on Enter makes the session and attaches.
+    let web = root.join("web");
+    outside.tm(web.to_str().unwrap(), "");
+    assert!(fzf("fzf.args").contains("\nprojects> \n"));
+    assert!(fzf("fzf.rows").starts_with(&format!("{}\t", web.display())));
+    assert_eq!(
+        outside.tmux(&["list-sessions", "-F", "#{session_name} #{session_path}"]),
+        format!("web {}", web.display())
+    );
+
+    // With the server up, the project's row is its session's.
+    let id = outside.tmux(&["display-message", "-p", "-t", "web:", "#{session_id}"]);
+    outside.tm(&id, "");
+    assert!(fzf("fzf.rows").starts_with(&format!("{id}\t")));
+    // A name with no match is a new session.
+    outside.tm("", "scratch");
+    assert_eq!(
+        outside.tmux(&["list-sessions", "-F", "#{session_name}"]),
+        "scratch\nweb"
+    );
+    assert_eq!(files(&dir.join("state/run")), Vec::<String>::new());
 }

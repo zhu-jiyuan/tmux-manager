@@ -1,14 +1,15 @@
 //! One open popup: the row snapshot fzf is showing and the state kept
 //! beside it.
 //!
-//! `switch` creates the snapshot and exports its path as `TM_SNAPSHOT`, so
-//! every subcommand fzf runs finds the same popup through [`Popup::current`].
-//! Small bits of state live in *sidecars*: files next to the snapshot, one
-//! per [`Sidecar`] variant, so they survive each subcommand being a fresh
-//! process and vanish with the popup. Nothing else on disk is per popup.
+//! The picker (`switch`) creates the snapshot and exports its path as
+//! `TM_SNAPSHOT`, so every subcommand fzf runs finds the same popup through
+//! [`Popup::current`]. Small bits of state live in *sidecars*: files next to
+//! the snapshot, one per [`Sidecar`] variant, so they survive each subcommand
+//! being a fresh process and vanish with the popup. Nothing else on disk is
+//! per popup.
 //!
 //! Every piece of this state has an owner and goes with it. A popup's files
-//! belong to its `switch` process, whose pid names them: `cleanup` removes
+//! belong to its picker process, whose pid names them: `cleanup` removes
 //! them when it exits, and the next popup's [`Popup::create`] when it was
 //! killed. Run from a shell, with no `TM_SNAPSHOT`, a subcommand is the
 //! first key of a popup of its own that lives in memory as long as the
@@ -85,6 +86,8 @@ pub enum Sidecar {
     View,
     /// Present while the key legend is hidden.
     Help,
+    /// The `@tm-projects` value as the popup opened (`projects::capture`).
+    Projects,
 }
 
 impl Sidecar {
@@ -96,13 +99,14 @@ impl Sidecar {
             Sidecar::Preview => "preview",
             Sidecar::View => "view",
             Sidecar::Help => "help",
+            Sidecar::Projects => "projects",
         }
     }
 }
 
 /// Where a popup keeps its snapshot and sidecars.
 enum Store {
-    /// Files named after the snapshot: a popup `switch` opened, or one whose
+    /// Files named after the snapshot: a popup the picker opened, or one whose
     /// snapshot the caller named in `TM_SNAPSHOT`, and so owns.
     Files(PathBuf),
     /// Sidecars by extension, in this process's memory: a run from a shell.
@@ -273,7 +277,7 @@ impl Popup {
     }
 }
 
-/// The pid of the `switch` that owns a file in `run`, from its name:
+/// The pid of the picker that owns a file in `run`, from its name:
 /// `switch-<pid>.<anything>` (the snapshot, its sidecars, and the temporary
 /// files of `write_atomic`).
 fn owner(name: &str) -> Option<u32> {
@@ -290,7 +294,7 @@ fn alive(pid: u32) -> bool {
 
 /// Keep only the files of popups that are open: each file whose owner is
 /// dead goes, sidecars without a snapshot included, and so does any other
-/// file in `run` not named after a `switch` pid (tm makes no directories
+/// file in `run` not named after a picker's pid (tm makes no directories
 /// there, and leaves any it finds). `me` is the popup being created, so
 /// whatever a dead process with the same pid left cannot become its state.
 fn remove_stale(run: &Path, me: u32) {

@@ -63,11 +63,11 @@ fi
 size="-w '$(get_opt "@tm-switch-width" "75%")' -h '$(get_opt "@tm-switch-height" "65%")'"
 
 bind_popup() {
-  # $1 key, $2 extra tm arguments
-  tmux bind-key "$1" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -T ' tmux manager ' $size \"'$bin' switch '#{q:client_name}' $2\""
+  # $1 key, $2 the list to start on
+  tmux bind-key "$1" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -T ' tmux manager ' $size \"'$bin' --client '#{q:client_name}' $2\""
 }
 
-bind_popup "$(get_opt "@tm-session-key" "s")" ""
+bind_popup "$(get_opt "@tm-session-key" "s")" "--sessions"
 bind_popup "$(get_opt "@tm-window-key" "w")" "--windows"
 if [ -n "$(get_opt "@tm-projects" "")" ]; then
   bind_popup "$(get_opt "@tm-project-key" "f")" "--projects"

@@ -188,7 +188,7 @@ pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
 /// Silent whenever it cannot: hooks must not disturb agents.
 pub fn hook(name: &str, event: Option<&str>) -> Result<()> {
     let pane = env::var("TMUX_PANE").unwrap_or_default();
-    if !pane.starts_with('%') || env::var_os("TMUX").is_none() {
+    if !pane.starts_with('%') || !tmux::inside() {
         return Ok(());
     }
     let Some(harness) = harness::by_name(name) else {
