@@ -4,10 +4,6 @@
 //! A project row's id is its absolute path. No session (`$n`) or window
 //! (`@n`) id looks like that, so the row keys know to leave it alone, and
 //! Enter knows to open it.
-//!
-//! The option lives in the user's tmux config, so outside tmux, before any
-//! server runs, only a server can read it. The picker asks once, as it
-//! opens, and keeps the answer for its keys (see [`capture`]).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -74,9 +70,10 @@ pub fn free_name(path: &Path, taken: impl Fn(&str) -> bool) -> String {
 }
 
 /// The option's value for a picker that is opening, kept in its
-/// `Projects` sidecar. `start-server` does nothing to a running server;
-/// with none, it starts one that reads the user's config, answers, and
-/// exits for want of a session, so the picker's keys must not ask again.
+/// `Projects` sidecar for its keys. The option lives in the user's tmux
+/// config, so outside tmux only a server can read it: `start-server` does
+/// nothing to a running one, and otherwise starts one that reads the
+/// config, answers, and exits for want of a session.
 pub fn capture(popup: &Popup) -> Result<String> {
     let value = tmux::run_lossy(&["start-server", ";", "show-option", "-gqv", OPTION]);
     popup.write(Sidecar::Projects, &value)?;
@@ -147,51 +144,21 @@ pub fn scan(popup: &Popup) -> Vec<Project> {
     projects
 }
 
-/// Every session: id, name, start directory. None with no server.
-fn sessions() -> Result<Vec<(String, String, PathBuf)>> {
-    Ok(tmux::list(&[
-        "list-sessions",
-        "-F",
-        "#{session_id}\t#{session_name}\t#{session_path}",
-    ])?
-    .lines()
-    .filter_map(|line| {
-        let mut fields = line.splitn(3, '\t');
-        Some((
-            fields.next()?.to_string(),
-            fields.next()?.to_string(),
-            PathBuf::from(fields.next()?),
-        ))
-    })
-    .collect())
-}
-
-/// The session started in `dir`, or a new one made there (starting the
-/// server if need be); its id either way.
+/// The session started in `dir`, or a new one made there; its id either way.
 pub fn open(dir: &Path) -> Result<String> {
     let path = fs::canonicalize(dir).with_context(|| dir.display().to_string())?;
     if !path.is_dir() {
         bail!("{} is not a directory", path.display());
     }
-    let sessions = sessions()?;
+    let sessions = tmux::sessions()?;
     let started_here = |start: &Path| fs::canonicalize(start).is_ok_and(|start| start == path);
-    if let Some((id, _, _)) = sessions.iter().find(|(_, _, start)| started_here(start)) {
-        return Ok(id.clone());
+    if let Some(session) = sessions.iter().find(|session| started_here(&session.path)) {
+        return Ok(session.id.clone());
     }
     let name = free_name(&path, |name| {
-        sessions.iter().any(|(_, existing, _)| existing == name)
+        sessions.iter().any(|session| session.name == name)
     });
-    tmux::run(&[
-        "new-session",
-        "-d",
-        "-s",
-        &name,
-        "-c",
-        &path.to_string_lossy(),
-        "-P",
-        "-F",
-        "#{session_id}",
-    ])
+    tmux::new_session(&name, Some(&path))
 }
 
 #[cfg(test)]

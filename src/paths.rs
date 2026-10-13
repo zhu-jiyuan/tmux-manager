@@ -3,7 +3,7 @@
 //! Persistent state (favorites) lives in the state directory. Per-popup
 //! scratch files (the row snapshot fzf is showing and its sidecars, see
 //! `popup`) live in a `run` subdirectory, named after the pid of the
-//! `switch` that owns them, and go when it does.
+//! picker that owns them, and go when it does.
 
 use std::path::{Path, PathBuf};
 use std::{env, fs, process};
@@ -35,9 +35,9 @@ pub fn switcher_file() -> PathBuf {
     state_dir().join("switcher.json")
 }
 
-/// The row snapshot of the popup whose fzf runs us. `switch` exports it so
-/// the commands fzf runs share small bits of state through sidecars. `None`
-/// from a shell (an empty value counts as unset): see `Popup::current`.
+/// The row snapshot of the popup whose fzf runs us, which the picker
+/// exports. `None` from a shell (an empty value counts as unset): see
+/// `Popup::current`.
 pub fn snapshot() -> Option<PathBuf> {
     env::var_os("TM_SNAPSHOT")
         .filter(|path| !path.is_empty())

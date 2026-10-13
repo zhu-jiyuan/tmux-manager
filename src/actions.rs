@@ -103,7 +103,7 @@ pub fn with_nth() -> Result<()> {
 /// it does not take the client (and this popup) down with it.
 fn park_clients(session: &str) -> Result<()> {
     let sessions = tmux::sessions()?;
-    let Some(fallback) = sessions.iter().find(|id| *id != session) else {
+    let Some(fallback) = sessions.iter().find(|other| other.id != session) else {
         return Ok(());
     };
     for line in tmux::run(&["list-clients", "-F", "#{client_name}\t#{session_id}"])?.lines() {
@@ -111,7 +111,7 @@ fn park_clients(session: &str) -> Result<()> {
             continue;
         };
         if attached == session {
-            tmux::run(&["switch-client", "-c", client, "-t", fallback])?;
+            tmux::run(&["switch-client", "-c", client, "-t", &fallback.id])?;
         }
     }
     Ok(())
@@ -323,7 +323,7 @@ fn apply(question: &Question, answer: &str) -> Result<bool> {
         }
         Question::NewSession if answer.is_empty() => return Ok(false),
         Question::NewSession => {
-            tmux::run(&["new-session", "-d", "-s", answer])?;
+            tmux::new_session(answer, None)?;
         }
     }
     Ok(true)

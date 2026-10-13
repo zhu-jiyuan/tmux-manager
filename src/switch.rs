@@ -116,9 +116,7 @@ pub fn here(mode: Option<Mode>) -> Result<()> {
     open(&client, mode)
 }
 
-/// Run the picker and take `client` to whatever the user picked. With no
-/// mode given it starts on the projects, or the sessions when there are no
-/// project roots.
+/// Run the picker and take `client` to whatever the user picked.
 fn open(client: &Client, mode: Option<Mode>) -> Result<()> {
     let fzf_bin = fzf::locate().context("fzf not found (brew install fzf)")?;
     fzf::check_version(&fzf_bin)?;
@@ -269,16 +267,7 @@ fn choice(status: Option<i32>, query: &str, selected: Option<&str>) -> Result<Op
             if (query.starts_with('/') || query.starts_with('~')) && typed.is_dir() {
                 projects::open(&typed).map(Some)
             } else {
-                tmux::run(&[
-                    "new-session",
-                    "-d",
-                    "-s",
-                    query,
-                    "-P",
-                    "-F",
-                    "#{session_id}",
-                ])
-                .map(Some)
+                tmux::new_session(query, None).map(Some)
             }
         }
         _ => Ok(None),

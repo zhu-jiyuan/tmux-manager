@@ -263,8 +263,8 @@ pub fn full(row: &str) -> Result<()> {
         }
         match (key.code, key.modifiers) {
             // Only forward: ctrl-h reaches us as Backspace through tmux, so a
-            // single wrapping key is the honest option.
-            // Through this popup, so the choice holds in one kept in memory.
+            // single wrapping key is the honest option. `advance` takes this
+            // popup, so the choice holds in one kept in memory too.
             (KeyCode::Char('l'), _) => {
                 if let RowId::Session(session) = &id {
                     advance(&popup, session)?;

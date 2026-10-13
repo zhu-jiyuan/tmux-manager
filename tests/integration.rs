@@ -321,7 +321,7 @@ fn names(rows: &str) -> Vec<String> {
 }
 
 #[test]
-fn rows_favorites_help_and_refresh() {
+fn rows_favorites_legend_and_refresh() {
     let Some(server) = Server::start("rows") else {
         return;
     };
@@ -543,13 +543,10 @@ fn windows_mode_lists_manages_and_previews_windows() {
     };
     server.tmux(&["new-window", "-d", "-t", "alpha:", "-n", "editor"]);
     server.tmux(&["new-session", "-d", "-s", "beta", "-x", "120", "-y", "40"]);
-    fs::write(server.state.join("snap.mode"), "windows").unwrap();
+    server.tm(&["mode", "--windows"]);
 
     let rows = server.tm(&["list"]);
-    let ids: Vec<String> = rows
-        .lines()
-        .map(|line| line.split('\t').next().unwrap().to_string())
-        .collect();
+    let ids = ids(&rows);
     assert_eq!(
         ids.len(),
         5,
@@ -859,10 +856,7 @@ fn projects_mode_lists_and_opens_directories() {
         ["alpha-app", "alpha-app", "beta_app", "nested"],
         "{rows}"
     );
-    let ids: Vec<&str> = rows
-        .lines()
-        .map(|line| line.split('\t').next().unwrap())
-        .collect();
+    let ids = ids(&rows);
     assert_eq!(
         ids[0],
         root.join("alpha-app").to_str().unwrap(),
@@ -1075,7 +1069,7 @@ fn the_picker_takes_the_client_to_the_pick() {
     assert_eq!(server.showing(&client), "gamma:0");
     assert_eq!(server.sessions(), ["alpha", "beta", "gamma"]);
 
-    // Popup or prompt, the picker leaves no file behind.
+    // The picker leaves no file behind.
     assert_eq!(files(&server.state.join("run")), Vec::<String>::new());
 }
 

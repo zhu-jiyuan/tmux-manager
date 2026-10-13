@@ -76,8 +76,6 @@ pub struct Record {
     pub state: State,
     pub pid: i32,
     pub started: String,
-    // Records written before the rename stay on the panes of a running server.
-    #[serde(alias = "provider")]
     pub harness: String,
     pub event: String,
 }
@@ -268,19 +266,5 @@ mod tests {
             ("PreToolUse", "Bash")
         );
         assert_eq!(Hook::parse(None, "not json").event, "");
-    }
-
-    #[test]
-    fn old_records_still_parse() {
-        let record: Record = serde_json::from_str(
-            r#"{"state":"working","pid":1,"started":"x","provider":"codex","event":"Stop"}"#,
-        )
-        .expect("the provider alias reads records left by older binaries");
-        assert_eq!(record.harness, "codex");
-        assert!(
-            serde_json::to_string(&record)
-                .unwrap()
-                .contains("\"harness\":\"codex\"")
-        );
     }
 }

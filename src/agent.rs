@@ -146,11 +146,10 @@ fn pane_state(
         .unwrap_or(State::Plain)
 }
 
-/// One state per window, keyed by window id. `ps` and `capture-pane` run
-/// only for panes that could hold an agent: something other than the shell
-/// is in front, or a hook record is present. Which harness it is, if any,
-/// is left to its command line in `ps`, never guessed from a name.
-/// `TM_AGENT_SCAN=always` checks every pane.
+/// One state per window, keyed by window id. A pane could hold an agent
+/// when something other than the shell is in front or a hook record is
+/// on it; which harness, if any, is left to its command line in `ps`,
+/// never guessed from a name. `TM_AGENT_SCAN=always` checks every pane.
 pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
     let always = env::var("TM_AGENT_SCAN").is_ok_and(|v| v == "always");
     // A record catches the agents a shell runs from a command line, which

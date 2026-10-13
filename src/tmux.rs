@@ -7,6 +7,7 @@
 //! the default server, which may not be running yet.
 
 use std::env;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Result, bail};
@@ -62,12 +63,41 @@ pub fn run_lossy(args: &[&str]) -> String {
     run(args).unwrap_or_default()
 }
 
-/// Ids of all sessions on the server.
-pub fn sessions() -> Result<Vec<String>> {
-    Ok(run(&["list-sessions", "-F", "#{session_id}"])?
-        .lines()
-        .map(str::to_string)
-        .collect())
+pub struct Session {
+    pub id: String,
+    pub name: String,
+    /// The directory it was started in.
+    pub path: PathBuf,
+}
+
+/// Every session; none with no server.
+pub fn sessions() -> Result<Vec<Session>> {
+    Ok(list(&[
+        "list-sessions",
+        "-F",
+        "#{session_id}\t#{session_name}\t#{session_path}",
+    ])?
+    .lines()
+    .filter_map(|line| {
+        let mut fields = line.splitn(3, '\t');
+        Some(Session {
+            id: fields.next()?.to_string(),
+            name: fields.next()?.to_string(),
+            path: PathBuf::from(fields.next()?),
+        })
+    })
+    .collect())
+}
+
+/// A detached session named `name`, started in `dir` (else tm's own
+/// directory), and the server with it if none runs; its id.
+pub fn new_session(name: &str, dir: Option<&Path>) -> Result<String> {
+    let dir = dir.map(|dir| dir.to_string_lossy());
+    let mut args = vec!["new-session", "-d", "-s", name, "-P", "-F", "#{session_id}"];
+    if let Some(dir) = &dir {
+        args.extend(["-c", dir]);
+    }
+    run(&args)
 }
 
 /// One pane with everything the rows and the agent collector need about it,

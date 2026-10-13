@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{fzf, harness, paths};
 
-/// `'/path/to/tm' hook <harness>`, or `tmm` from before the rename.
+/// `'/path/to/tm' hook <harness>`, wherever the binary was.
 fn is_ours(item: &Value) -> bool {
     let Some(command) = item.get("command").and_then(Value::as_str) else {
         return false;
@@ -23,10 +23,7 @@ fn is_ours(item: &Value) -> bool {
         return false;
     };
     let program = Path::new(program.trim().trim_matches(['\'', '"']));
-    matches!(
-        program.file_name().and_then(|name| name.to_str()),
-        Some("tm" | "tmm")
-    )
+    program.file_name().and_then(|name| name.to_str()) == Some("tm")
 }
 
 /// Returns whether the file changed.
@@ -116,7 +113,7 @@ mod tests {
         let path = dir.join("settings.json");
         fs::write(
             &path,
-            r#"{"other": 1, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "theirs"}, {"type": "command", "command": "/opt/utm/gk ai hook run"}, {"type": "command", "command": "/old/tmm hook claude"}]}]}}"#,
+            r#"{"other": 1, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "theirs"}, {"type": "command", "command": "/opt/utm/gk ai hook run"}, {"type": "command", "command": "/old/tm hook claude"}]}]}}"#,
         )
         .unwrap();
         assert!(merge(&path, &["Stop", "SessionStart"], "'/new/tm' hook claude").unwrap());
