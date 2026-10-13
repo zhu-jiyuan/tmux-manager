@@ -64,7 +64,7 @@ size="-w '$(get_opt "@tm-switch-width" "75%")' -h '$(get_opt "@tm-switch-height"
 
 bind_popup() {
   # $1 key, $2 extra tm arguments
-  tmux bind-key "$1" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -T ' tm ' $size \"'$bin' switch '#{q:client_name}' $2\""
+  tmux bind-key "$1" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -T ' tmux manager ' $size \"'$bin' switch '#{q:client_name}' $2\""
 }
 
 bind_popup "$(get_opt "@tm-session-key" "s")" ""
