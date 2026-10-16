@@ -1,12 +1,15 @@
 //! The preview pane: the selected row's window, redrawn by fzf once a second.
 //!
-//! A session row previews one of its windows; `ctrl-l` moves on to the next
-//! without changing which window tmux considers active. That choice lives in
-//! the popup's `Preview` sidecar, so it survives fzf restarting the preview
-//! command whenever the cursor moves. A project that is not open previews
+//! A row previews the pane whose agent most wants attention, the one behind
+//! its dots: a session row looks through all its windows, a window row
+//! through its panes. Without an agent it is the active one. `ctrl-l` moves
+//! a session row on to the next window without changing which window tmux
+//! considers active. That choice lives in the popup's `Preview` sidecar, so
+//! it survives fzf restarting the preview command whenever the cursor moves. A project that is not open previews
 //! its directory instead: where it is, its git state, what is in it.
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -18,67 +21,59 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
 
+use crate::agent::{self, State};
 use crate::ansi::{Colour, bold, clip_line, faint, fit_frame, tint};
 use crate::popup::{Popup, Sidecar};
+use crate::projects;
 use crate::rows::RowId;
-use crate::{projects, tmux};
+use crate::tmux::{self, Pane};
 
 const GONE: &str = "Gone: this row no longer exists";
-
-/// Window ids of a session in index order, and whether each is active.
-fn windows_of(session: &str) -> Result<Vec<(String, bool)>> {
-    Ok(tmux::run(&[
-        "list-windows",
-        "-t",
-        session,
-        "-F",
-        "#{window_id}\t#{window_active}",
-    ])?
-    .lines()
-    .filter_map(|line| {
-        let (id, active) = line.split_once('\t')?;
-        Some((id.to_string(), active == "1"))
-    })
-    .collect())
-}
 
 /// Each session's chosen preview window.
 fn choices(popup: &Popup) -> Result<BTreeMap<String, String>> {
     Ok(popup.read_json(Sidecar::Preview)?.unwrap_or_default())
 }
 
-/// The chosen window if it still exists, else the active one.
-fn current(
-    session: &str,
-    windows: &[(String, bool)],
-    choices: &BTreeMap<String, String>,
-) -> Option<String> {
-    choices
-        .get(session)
-        .filter(|id| windows.iter().any(|(w, _)| w == *id))
-        .cloned()
-        .or_else(|| {
-            windows
-                .iter()
-                .find(|(_, active)| *active)
-                .or(windows.first())
-                .map(|(id, _)| id.clone())
+/// The pane most worth seeing among one session's `panes`: within `window`
+/// while it exists, else anywhere. The agent that most wants attention wins,
+/// so the preview shows what the row's dots announce. Without one, or on a
+/// tie, the active window, else the first; within a window, its active pane.
+fn pick<'a>(
+    panes: &'a [Pane],
+    states: &HashMap<String, State>,
+    window: Option<&str>,
+) -> Option<&'a Pane> {
+    let window = window.filter(|id| panes.iter().any(|pane| pane.window_id == *id));
+    panes
+        .iter()
+        .filter(|pane| window.is_none_or(|id| pane.window_id == id))
+        // max_by_key keeps the last of equals; reversed, that is the first.
+        .rev()
+        .max_by_key(|pane| {
+            let state = states.get(&pane.id).copied().unwrap_or(State::Plain);
+            (
+                state,
+                pane.window_active,
+                Reverse(pane.window_index),
+                pane.active,
+            )
         })
 }
 
-/// The window a row previews: a window row is its own; a session row shows
-/// its chosen window.
-fn target(popup: &Popup, id: &RowId) -> Result<String> {
-    match id {
-        RowId::Window(window) => Ok(window.clone()),
-        RowId::Session(session) => {
-            let windows = windows_of(session)?;
-            let chosen = current(session, &windows, &choices(popup)?)
-                .context("a session with no windows")?;
-            Ok(format!("{session}:{chosen}"))
-        }
+/// The pane a row previews: the best of a window row's window, or of the
+/// window `ctrl-l` chose for a session row, else of the whole session.
+fn target(popup: &Popup, id: &RowId) -> Result<Pane> {
+    let (scope, window) = match id {
+        RowId::Window(window) => (window, Some(window.clone())),
+        RowId::Session(session) => (session, choices(popup)?.remove(session)),
         RowId::Project(path) => bail!("{} has no window", path.display()),
-    }
+    };
+    let panes = tmux::session_panes(scope)?;
+    let states = agent::pane_states(&panes)?;
+    pick(&panes, &states, window.as_deref())
+        .cloned()
+        .context("a session with no windows")
 }
 
 /// `ctrl-l`: move a session row's preview to its next window, wrapping.
@@ -89,15 +84,23 @@ pub fn next(row: &str) -> Result<()> {
     advance(&Popup::current(), &session)
 }
 
-/// Move `session`'s preview in `popup` to its next window, wrapping.
+/// Move `session`'s preview in `popup` to the window after the one it
+/// shows, wrapping.
 fn advance(popup: &Popup, session: &str) -> Result<()> {
-    let windows = windows_of(session)?;
+    let panes = tmux::session_panes(session)?;
+    let states = agent::pane_states(&panes)?;
     let mut choices = choices(popup)?;
-    let Some(now) = current(session, &windows, &choices) else {
+    let Some(now) = pick(&panes, &states, choices.get(session).map(String::as_str)) else {
         return Ok(());
     };
-    let position = windows.iter().position(|(id, _)| *id == now).unwrap_or(0);
-    let following = windows[(position + 1) % windows.len()].0.clone();
+    // A session's panes come window by window, so this leaves one id each.
+    let mut windows: Vec<&str> = panes.iter().map(|pane| pane.window_id.as_str()).collect();
+    windows.dedup();
+    let position = windows
+        .iter()
+        .position(|id| *id == now.window_id)
+        .unwrap_or(0);
+    let following = windows[(position + 1) % windows.len()].to_string();
     choices.insert(session.to_string(), following);
     popup.write_json(Sidecar::Preview, &choices)
 }
@@ -109,24 +112,17 @@ fn render(popup: &Popup, id: &RowId, columns: usize, lines: usize) -> String {
     if let RowId::Project(path) = id {
         return directory(path, columns, lines);
     }
-    let Ok(target) = target(popup, id) else {
+    let Ok(pane) = target(popup, id) else {
         return bold(GONE);
     };
-    let info = tmux::run_lossy(&[
-        "display-message",
-        "-p",
-        "-t",
-        &target,
-        "#{session_name}\t#{window_index}\t#{window_name}\t#{window_panes}",
-    ]);
-    let [name, index, window, panes] = info.split('\t').collect::<Vec<_>>()[..] else {
-        return bold(GONE);
-    };
-    let mut title = format!("{name}  ·  {index}: {window}");
-    if panes != "1" {
-        title.push_str(&format!("  ·  {panes} panes"));
+    let mut title = format!(
+        "{}  ·  {}: {}",
+        pane.session_name, pane.window_index, pane.window_name
+    );
+    if pane.window_panes > 1 {
+        title.push_str(&format!("  ·  {} panes", pane.window_panes));
     }
-    let capture = tmux::run_lossy(&["capture-pane", "-p", "-e", "-t", &target]);
+    let capture = tmux::run_lossy(&["capture-pane", "-p", "-e", "-t", &pane.id]);
     let frame = fit_frame(&capture, columns, lines.saturating_sub(2));
     let text = format!("{}\n\n{frame}", bold(&clip_line(&title, columns)));
     // An empty capture would leave trailing newlines; fzf counts those as lines.
@@ -286,4 +282,92 @@ pub fn view_return() -> Result<()> {
     let popup = Popup::current();
     println!("{}", popup.take(Sidecar::View)?.unwrap_or_default());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pane `%n` in window `@w`; window `@0` and the first pane of each
+    /// window are the active ones.
+    fn pane(window: usize, n: usize, active: bool) -> Pane {
+        Pane {
+            session_id: "$0".into(),
+            session_name: "s".into(),
+            session_attached: false,
+            session_path: "/nowhere".into(),
+            window_id: format!("@{window}"),
+            window_index: window,
+            window_name: format!("w{window}"),
+            window_active: window == 0,
+            window_panes: 2,
+            id: format!("%{n}"),
+            active,
+            pid: 1,
+            dead: false,
+            tty: String::new(),
+            at_prompt: true,
+            record: None,
+        }
+    }
+
+    fn picked(panes: &[Pane], states: &[(&str, State)], window: Option<&str>) -> String {
+        let states = states
+            .iter()
+            .map(|(id, state)| (id.to_string(), *state))
+            .collect();
+        pick(panes, &states, window).unwrap().id.clone()
+    }
+
+    #[test]
+    fn the_agent_that_wants_attention_is_shown() {
+        // Window @0 is active with a shell in front; agents sit in @1 and @2.
+        let panes = [
+            pane(0, 0, true),
+            pane(0, 1, false),
+            pane(1, 2, true),
+            pane(1, 3, false),
+            pane(2, 4, true),
+        ];
+        assert_eq!(picked(&panes, &[], None), "%0", "no agent: the active pane");
+        assert_eq!(
+            picked(&panes, &[("%3", State::Working)], None),
+            "%3",
+            "an agent anywhere in the session beats the active window, and \
+             the active pane of its own"
+        );
+        assert_eq!(
+            picked(
+                &panes,
+                &[("%3", State::Working), ("%4", State::Waiting)],
+                None
+            ),
+            "%4",
+            "waiting beats working"
+        );
+        assert_eq!(
+            picked(
+                &panes,
+                &[("%3", State::Waiting), ("%4", State::Waiting)],
+                None
+            ),
+            "%3",
+            "a tie goes to the first window"
+        );
+        assert_eq!(
+            picked(&panes, &[("%4", State::Waiting)], Some("@1")),
+            "%2",
+            "a chosen window keeps the preview"
+        );
+        assert_eq!(
+            picked(&panes, &[("%1", State::Working)], Some("@0")),
+            "%1",
+            "and within it the agent's pane wins"
+        );
+        assert_eq!(
+            picked(&panes, &[("%4", State::Waiting)], Some("@9")),
+            "%4",
+            "a chosen window that closed leaves it to the agents again"
+        );
+    }
 }

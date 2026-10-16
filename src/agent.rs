@@ -146,11 +146,24 @@ fn pane_state(
         .unwrap_or(State::Plain)
 }
 
-/// One state per window, keyed by window id. A pane could hold an agent
+/// One state per window, keyed by window id: the strongest of its panes.
+pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
+    let states = pane_states(panes)?;
+    let mut windows = BTreeMap::new();
+    for pane in panes {
+        let window = windows
+            .entry(pane.window_id.clone())
+            .or_insert(State::Plain);
+        *window = (*window).max(states[&pane.id]);
+    }
+    Ok(windows)
+}
+
+/// One state per pane, keyed by pane id. A pane could hold an agent
 /// when something other than the shell is in front or a hook record is
 /// on it; which harness, if any, is left to its command line in `ps`,
 /// never guessed from a name. `TM_AGENT_SCAN=always` checks every pane.
-pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
+pub fn pane_states(panes: &[Pane]) -> Result<HashMap<String, State>> {
     let always = env::var("TM_AGENT_SCAN").is_ok_and(|v| v == "always");
     // A record catches the agents a shell runs from a command line, which
     // look like a pane at its prompt.
@@ -163,23 +176,21 @@ pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
         .collect();
     let table = processes_on(&ttys)?;
 
-    let mut windows = BTreeMap::new();
-    for pane in panes {
-        let state = if suspicious(pane) {
-            pane_state(pane.pid, pane.record.as_deref(), &table, || {
-                // The visible pane plus 20 lines of history, so a short pane
-                // still fills the tail the hints read.
-                tmux::run_lossy(&["capture-pane", "-p", "-t", &pane.id, "-S", "-20"])
-            })
-        } else {
-            State::Plain
-        };
-        let window = windows
-            .entry(pane.window_id.clone())
-            .or_insert(State::Plain);
-        *window = (*window).max(state);
-    }
-    Ok(windows)
+    Ok(panes
+        .iter()
+        .map(|pane| {
+            let state = if suspicious(pane) {
+                pane_state(pane.pid, pane.record.as_deref(), &table, || {
+                    // The visible pane plus 20 lines of history, so a short pane
+                    // still fills the tail the hints read.
+                    tmux::run_lossy(&["capture-pane", "-p", "-t", &pane.id, "-S", "-20"])
+                })
+            } else {
+                State::Plain
+            };
+            (pane.id.clone(), state)
+        })
+        .collect())
 }
 
 /// Called by a harness's hook. Asks the harness what the call means, finds

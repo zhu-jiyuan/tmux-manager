@@ -748,6 +748,13 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         r#"{"@0":"plain","@1":"waiting"}"#,
         "an agent with no busy hint is waiting"
     );
+    let alpha = server.session_id("alpha");
+    let preview = || plain(&server.tm(&["preview", &alpha]));
+    assert!(
+        preview().starts_with("alpha  ·  1: agent"),
+        "the session row previews its agent, not the active shell: {:?}",
+        preview()
+    );
 
     let record = || server.tmux(&["show-options", "-pqv", "-t", &pane, "@tm-agent"]);
     // The shipped hooks pass a JSON payload on stdin; the event may also be
@@ -824,6 +831,11 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         session_dots().matches('●').count(),
         0,
         "an ended agent leaves no dot"
+    );
+    assert!(
+        preview().starts_with("alpha  ·  0:"),
+        "with no agent left, the active window: {:?}",
+        preview()
     );
 }
 

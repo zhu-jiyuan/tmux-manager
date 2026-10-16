@@ -253,6 +253,7 @@ mod tests {
             window_index: window.1,
             window_name: window.2.to_string(),
             window_active: window.1 == 0,
+            active: true,
             window_panes: 1,
             id: format!("%{}", &window.0[1..]),
             pid: 1,

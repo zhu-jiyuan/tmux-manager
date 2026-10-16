@@ -102,6 +102,7 @@ pub fn new_session(name: &str, dir: Option<&Path>) -> Result<String> {
 
 /// One pane with everything the rows and the agent collector need about it,
 /// its window and its session.
+#[derive(Clone)]
 pub struct Pane {
     pub session_id: String,
     pub session_name: String,
@@ -114,6 +115,8 @@ pub struct Pane {
     pub window_active: bool,
     pub window_panes: usize,
     pub id: String,
+    /// The window's active pane.
+    pub active: bool,
     pub pid: i32,
     pub dead: bool,
     pub tty: String,
@@ -125,57 +128,73 @@ pub struct Pane {
     pub record: Option<String>,
 }
 
+/// Everything a [`Pane`] holds, in one format string. Names come last
+/// because they may contain anything, even tabs.
+const PANE_FORMAT: &str = "#{session_id}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t\
+     #{pane_id}\t#{pane_active}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{==:#{pane_current_command},#{b:default-shell}}\t\
+     #{@tm-agent}\t#{session_path}\t#{session_name}\t#{window_name}";
+
 /// Every pane on the server in one call, sessions and windows in tmux's
-/// order; none with no server. Names come last because they may contain
-/// anything, even tabs.
+/// order; none with no server.
 pub fn panes() -> Result<Vec<Pane>> {
-    list(&[
+    parse_panes(&list(&["list-panes", "-a", "-F", PANE_FORMAT])?)
+}
+
+/// Every pane of the session `target` names (a window id names its
+/// session), windows in index order.
+pub fn session_panes(target: &str) -> Result<Vec<Pane>> {
+    parse_panes(&run(&[
         "list-panes",
-        "-a",
+        "-s",
+        "-t",
+        target,
         "-F",
-        "#{session_id}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t\
-         #{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{==:#{pane_current_command},#{b:default-shell}}\t\
-         #{@tm-agent}\t#{session_path}\t#{session_name}\t#{window_name}",
-    ])?
-    .lines()
-    .map(|line| {
-        let [
-            session_id,
-            attached,
-            window_id,
-            window_index,
-            window_active,
-            window_panes,
-            id,
-            pid,
-            dead,
-            tty,
-            at_prompt,
-            record,
-            session_path,
-            session_name,
-            window_name,
-        ] = line.splitn(15, '\t').collect::<Vec<_>>()[..]
-        else {
-            bail!("list-panes: {line}");
-        };
-        Ok(Pane {
-            session_id: session_id.to_string(),
-            session_name: session_name.to_string(),
-            session_attached: attached != "0",
-            session_path: session_path.to_string(),
-            window_id: window_id.to_string(),
-            window_index: window_index.parse()?,
-            window_name: window_name.to_string(),
-            window_active: window_active == "1",
-            window_panes: window_panes.parse()?,
-            id: id.to_string(),
-            pid: pid.parse()?,
-            dead: dead == "1",
-            tty: tty.to_string(),
-            at_prompt: at_prompt == "1",
-            record: (!record.is_empty()).then(|| record.to_string()),
+        PANE_FORMAT,
+    ])?)
+}
+
+fn parse_panes(text: &str) -> Result<Vec<Pane>> {
+    text.lines()
+        .map(|line| {
+            let [
+                session_id,
+                attached,
+                window_id,
+                window_index,
+                window_active,
+                window_panes,
+                id,
+                active,
+                pid,
+                dead,
+                tty,
+                at_prompt,
+                record,
+                session_path,
+                session_name,
+                window_name,
+            ] = line.splitn(16, '\t').collect::<Vec<_>>()[..]
+            else {
+                bail!("list-panes: {line}");
+            };
+            Ok(Pane {
+                session_id: session_id.to_string(),
+                session_name: session_name.to_string(),
+                session_attached: attached != "0",
+                session_path: session_path.to_string(),
+                window_id: window_id.to_string(),
+                window_index: window_index.parse()?,
+                window_name: window_name.to_string(),
+                window_active: window_active == "1",
+                window_panes: window_panes.parse()?,
+                id: id.to_string(),
+                active: active == "1",
+                pid: pid.parse()?,
+                dead: dead == "1",
+                tty: tty.to_string(),
+                at_prompt: at_prompt == "1",
+                record: (!record.is_empty()).then(|| record.to_string()),
+            })
         })
-    })
-    .collect()
+        .collect()
 }
