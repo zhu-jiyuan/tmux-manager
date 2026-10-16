@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a tag like v0.2.0 builds every platform and publishes a GitHub
-# release with one tarball per target.
+# release with one tarball per target, and the commits since the previous
+# tag as its notes (scripts/changelog.sh).
 on:
   push:
     tags: ["v*"]
@@ -51,15 +52,28 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # The whole history and every tag: the notes are the commits since the
+      # previous tag.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
+      - name: Write the changelog
+        run: |
+          scripts/changelog.sh "$GITHUB_REF_NAME" > notes.md
+          cat notes.md
+
+      # GitHub's generated notes list pull requests, and this repository
+      # commits to main, so the notes come from the commits instead.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l dist
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" --generate-notes dist/*
+            --title "$GITHUB_REF_NAME" --notes-file notes.md dist/*
