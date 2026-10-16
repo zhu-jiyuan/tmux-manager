@@ -1,6 +1,6 @@
 [package]
 name = "tm"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 description = "tmux session switcher on fzf, with agent activity dots"
 license = "MIT"
