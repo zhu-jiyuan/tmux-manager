@@ -940,7 +940,9 @@ fn agents_list_jumps_previews_and_closes() {
             && preview.contains("\nbeta:0.1 · ~/"),
         "{preview:?}"
     );
-    assert!(preview.contains("hook codex"), "{preview:?}");
+    // The typed hook command wraps where the binary's path is long (CI's).
+    let words = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("hook codex"), "{preview:?}");
 
     // tab reaches the agents after the projects; keys act on the pane's window.
     server.tm(&["mode", "--projects"]);
