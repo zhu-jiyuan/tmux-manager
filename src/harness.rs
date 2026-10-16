@@ -19,7 +19,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::State;
+use crate::agent::{Reason, State, Status};
 
 /// Every harness tm knows, in the order they are tried.
 pub const ALL: &[&dyn Harness] = &[&claude::Claude, &codex::Codex];
@@ -55,16 +55,24 @@ pub trait Harness {
     /// What this harness's screen says when no record settles its state.
     fn hints(&self) -> &'static Hints;
 
-    /// The pane's state from this harness's live record and, when it does
+    /// The pane's status from this harness's live record and, when it does
     /// not settle it, the screen. `screen` captures once, on first use. Both
     /// harnesses so far name their permission hook `PermissionRequest`; one
     /// that does not overrides this.
-    fn pane_state(&self, record: Option<&Record>, screen: &dyn Fn() -> String) -> State {
+    fn pane_state(&self, record: Option<&Record>, screen: &dyn Fn() -> String) -> Status {
         match record {
             // A permission hook fires before approval, not when the tool
             // starts. Only a visible busy hint proves the agent has resumed.
-            Some(record) if record.event != "PermissionRequest" => record.state,
-            _ => self.hints().read(&screen()),
+            Some(record) if record.event == "PermissionRequest" => {
+                let seen = self.hints().read(&screen());
+                if seen.state == State::Working {
+                    seen
+                } else {
+                    Status::new(State::Waiting, Some(Reason::Permission))
+                }
+            }
+            Some(record) => Status::new(record.state, record.reason),
+            None => self.hints().read(&screen()),
         }
     }
 }
@@ -74,6 +82,9 @@ pub trait Harness {
 #[derive(Serialize, Deserialize)]
 pub struct Record {
     pub state: State,
+    /// Absent from records written before reasons existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Reason>,
     pub pid: i32,
     pub started: String,
     pub harness: String,
@@ -83,6 +94,7 @@ pub struct Record {
 /// What a hook event asks the collector to record.
 pub struct Update {
     pub state: State,
+    pub reason: Option<Reason>,
     pub event: String,
 }
 
@@ -142,13 +154,19 @@ impl Hook {
     }
 }
 
-/// A harness's screen regexes, compiled on first use. A question or limit
-/// message wins over a busy hint, and no busy hint at all means waiting.
+/// A harness's screen regexes, compiled on first use. A permission prompt,
+/// a question or a limit message wins over a busy hint, and no busy hint at
+/// all means waiting, for no reason the screen tells.
 pub struct Hints {
-    waiting: &'static str,
+    permission: &'static str,
+    question: &'static str,
     working: &'static str,
-    compiled: OnceLock<(Regex, Regex)>,
+    compiled: OnceLock<[Regex; 4]>,
 }
+
+/// The limit messages both harnesses print when they stop for the user's
+/// plan or the API's rate.
+const LIMIT: &str = r"you.ve hit your limit|usage limit reached|rate limit exceeded";
 
 /// How many of the captured lines, counted up from the last one with text,
 /// the hints are read from. Enough to reach Claude Code's spinner above its
@@ -156,20 +174,22 @@ pub struct Hints {
 const TAIL_LINES: usize = 14;
 
 impl Hints {
-    pub const fn new(waiting: &'static str, working: &'static str) -> Self {
+    pub const fn new(
+        permission: &'static str,
+        question: &'static str,
+        working: &'static str,
+    ) -> Self {
         Hints {
-            waiting,
+            permission,
+            question,
             working,
             compiled: OnceLock::new(),
         }
     }
 
-    pub fn read(&self, screen: &str) -> State {
-        let (waiting, working) = self.compiled.get_or_init(|| {
-            (
-                Regex::new(self.waiting).unwrap(),
-                Regex::new(self.working).unwrap(),
-            )
+    pub fn read(&self, screen: &str) -> Status {
+        let [permission, question, limit, working] = self.compiled.get_or_init(|| {
+            [self.permission, self.question, LIMIT, self.working].map(|re| Regex::new(re).unwrap())
         });
         // capture-pane prints the empty rows below the last output too; a
         // tall pane with little on it would otherwise leave nothing to read.
@@ -179,12 +199,17 @@ impl Hints {
         }
         let start = lines.len().saturating_sub(TAIL_LINES);
         let tail = lines[start..].join("\n").to_lowercase();
-        if waiting.is_match(&tail) {
-            State::Waiting
+        let waiting = |reason| Status::new(State::Waiting, Some(reason));
+        if permission.is_match(&tail) {
+            waiting(Reason::Permission)
+        } else if question.is_match(&tail) {
+            waiting(Reason::Question)
+        } else if limit.is_match(&tail) {
+            waiting(Reason::Error)
         } else if working.is_match(&tail) {
-            State::Working
+            Status::new(State::Working, None)
         } else {
-            State::Waiting
+            Status::new(State::Waiting, None)
         }
     }
 }
@@ -213,8 +238,9 @@ mod tests {
 
     #[test]
     fn records_settle_the_state_unless_a_permission_is_pending() {
-        let record = |state, event: &str| Record {
+        let record = |state, reason, event: &str| Record {
             state,
+            reason,
             pid: 1,
             started: "x".into(),
             harness: "test".into(),
@@ -222,29 +248,44 @@ mod tests {
         };
         let busy = || "Working (esc to interrupt)".to_string();
         let idle = || "$ ".to_string();
+        let waiting = |reason| Status::new(State::Waiting, reason);
         for harness in ALL {
             let name = harness.name();
-            let stop = record(State::Waiting, "Stop");
-            let permission = record(State::Waiting, "PermissionRequest");
+            let stop = record(State::Waiting, Some(Reason::Done), "Stop");
+            let permission = record(
+                State::Waiting,
+                Some(Reason::Permission),
+                "PermissionRequest",
+            );
             assert_eq!(
                 harness.pane_state(Some(&stop), &busy),
-                State::Waiting,
+                waiting(Some(Reason::Done)),
                 "{name}: a record wins over the screen"
             );
             assert_eq!(
-                harness.pane_state(Some(&permission), &busy),
+                harness.pane_state(Some(&permission), &busy).state,
                 State::Working,
                 "{name}: a busy hint after a permission hook means it resumed"
             );
             assert_eq!(
                 harness.pane_state(Some(&permission), &idle),
-                State::Waiting,
+                waiting(Some(Reason::Permission)),
                 "{name}: no busy hint, still waiting for approval"
             );
             assert_eq!(
-                harness.pane_state(None, &busy),
+                harness.pane_state(None, &busy).state,
                 State::Working,
                 "{name}: no record, the screen decides"
+            );
+            assert_eq!(
+                harness.pane_state(None, &idle),
+                waiting(None),
+                "{name}: an idle screen says nothing about why"
+            );
+            assert_eq!(
+                harness.pane_state(None, &|| "You've hit your limit".to_string()),
+                waiting(Some(Reason::Error)),
+                "{name}: a limit stops the turn"
             );
         }
     }

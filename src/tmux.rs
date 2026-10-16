@@ -115,6 +115,7 @@ pub struct Pane {
     pub window_active: bool,
     pub window_panes: usize,
     pub id: String,
+    pub index: usize,
     /// The window's active pane.
     pub active: bool,
     pub pid: i32,
@@ -126,13 +127,15 @@ pub struct Pane {
     pub at_prompt: bool,
     /// The record a harness's hook stored on the pane (`@tm-agent`), if any.
     pub record: Option<String>,
+    /// The directory the pane's foreground process is in.
+    pub path: String,
 }
 
 /// Everything a [`Pane`] holds, in one format string. Names come last
 /// because they may contain anything, even tabs.
 const PANE_FORMAT: &str = "#{session_id}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t\
-     #{pane_id}\t#{pane_active}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{==:#{pane_current_command},#{b:default-shell}}\t\
-     #{@tm-agent}\t#{session_path}\t#{session_name}\t#{window_name}";
+     #{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{==:#{pane_current_command},#{b:default-shell}}\t\
+     #{@tm-agent}\t#{session_path}\t#{pane_current_path}\t#{session_name}\t#{window_name}";
 
 /// Every pane on the server in one call, sessions and windows in tmux's
 /// order; none with no server.
@@ -164,6 +167,7 @@ fn parse_panes(text: &str) -> Result<Vec<Pane>> {
                 window_active,
                 window_panes,
                 id,
+                index,
                 active,
                 pid,
                 dead,
@@ -171,9 +175,10 @@ fn parse_panes(text: &str) -> Result<Vec<Pane>> {
                 at_prompt,
                 record,
                 session_path,
+                path,
                 session_name,
                 window_name,
-            ] = line.splitn(16, '\t').collect::<Vec<_>>()[..]
+            ] = line.splitn(18, '\t').collect::<Vec<_>>()[..]
             else {
                 bail!("list-panes: {line}");
             };
@@ -188,12 +193,14 @@ fn parse_panes(text: &str) -> Result<Vec<Pane>> {
                 window_active: window_active == "1",
                 window_panes: window_panes.parse()?,
                 id: id.to_string(),
+                index: index.parse()?,
                 active: active == "1",
                 pid: pid.parse()?,
                 dead: dead == "1",
                 tty: tty.to_string(),
                 at_prompt: at_prompt == "1",
                 record: (!record.is_empty()).then(|| record.to_string()),
+                path: path.to_string(),
             })
         })
         .collect()

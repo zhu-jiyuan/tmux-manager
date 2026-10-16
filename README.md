@@ -43,14 +43,15 @@ For the agent dots run `tm install-hooks` once. It merges its hooks into
 
 ## Keys
 
-`prefix + s` opens the session list, `prefix + w` the window list and
-`prefix + f` the project list. Just type to filter.
+`prefix + s` opens the session list, `prefix + w` the window list,
+`prefix + f` the project list and `prefix + a` the agent list. Just type to
+filter.
 
 | Key | Action |
 |---|---|
 | `Ctrl-j` `Ctrl-k` | move; `Ctrl-f` `Ctrl-b` page |
 | `Enter` | switch; with no match, create a session named after the query |
-| `Tab` | cycle the session, window and project lists |
+| `Tab` | cycle the session, window, project and agent lists |
 | `Ctrl-o` `Ctrl-r` `Ctrl-x` | new / rename / close, all on the input line |
 | `Ctrl-s` | star, pins the session to the top |
 | `Ctrl-l` | preview the next window |
@@ -59,14 +60,14 @@ For the agent dots run `tm install-hooks` once. It merges its hooks into
 | `Esc` | close |
 
 Options, set before the `run-shell` line: `@tm-session-key`,
-`@tm-window-key`, `@tm-project-key`, `@tm-projects`, `@tm-switch-width`,
-`@tm-switch-height`, `@tm-bin`.
+`@tm-window-key`, `@tm-project-key`, `@tm-agent-key`, `@tm-projects`,
+`@tm-switch-width`, `@tm-switch-height`, `@tm-bin`.
 
 ## From a shell
 
 `tm` opens the same list in the terminal, on the projects, or on the
-sessions when `@tm-projects` is unset; `--sessions`, `--windows` and
-`--projects` choose. Inside tmux, `Enter` switches to the pick. Outside, it
+sessions when `@tm-projects` is unset; `--sessions`, `--windows`,
+`--projects` and `--agents` choose. Inside tmux, `Enter` switches to the pick. Outside, it
 attaches tmux to the pick, creating the session, and starting the tmux
 server, when there is none yet.
 
@@ -86,3 +87,14 @@ opened some other way still shows as open. With no match, typing a path and
 pressing `Enter` opens that directory. Without this option `prefix + f`
 keeps its tmux meaning. The option lives in your tmux config, so outside
 tmux, with no server running, `tm` starts one to read it.
+
+## Agents
+
+`prefix + a` lists every pane where Claude Code or Codex works or waits,
+the waiting ones first. Each row shows the harness, where the pane is
+(`session:window`, plus `.pane` in a split window), the window's name, its
+directory, the dot, and why the agent waits when it can tell: `permission`,
+`question`, `done` or `error`. `Enter` jumps to the pane itself, the
+preview shows that pane, and `Ctrl-x` closes it, which ends the agent. The
+reasons come mostly from the hooks, so run `tm install-hooks` first;
+without them only a question or limit on screen gives one.

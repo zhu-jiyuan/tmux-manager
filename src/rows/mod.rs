@@ -9,8 +9,9 @@
 //! [`fetch`] asks tmux and the agent collector for everything once, and
 //! [`build`] turns that into rows without touching tmux again, so layout is
 //! plain code with unit tests. Each mode has its own file: sessions and
-//! windows in `sessions`, projects in `projects`.
+//! windows in `sessions`, projects in `projects`, agents in `agents`.
 
+mod agents;
 mod id;
 mod projects;
 mod sessions;
@@ -21,7 +22,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::agent::{self, State};
+use crate::agent::{self, Agent, State};
 use crate::ansi::{Colour, faint, pad, tint, visible_width};
 use crate::popup::{Mode, Popup};
 use crate::projects::Project;
@@ -46,6 +47,8 @@ pub struct Row {
 /// Everything the rows are made from, gathered once per listing.
 pub struct Data {
     pub panes: Vec<Pane>,
+    /// The agent in each pane that has one, by pane id.
+    pub agents: HashMap<String, Agent>,
     /// Agent state per window id.
     pub states: BTreeMap<String, State>,
     pub favorites: BTreeSet<String>,
@@ -66,7 +69,8 @@ impl Data {
 /// `popup` holds the project roots (see `projects::capture`).
 pub fn fetch(popup: &Popup, mode: Mode) -> Result<Data> {
     let panes = tmux::panes()?;
-    let states = agent::states(&panes)?;
+    let agents = agent::agents(&panes)?;
+    let states = agent::by_window(&panes, &agents);
     let favorites = Switcher::load()?.favorites;
     let mut session_dirs = HashMap::new();
     let mut projects = Vec::new();
@@ -82,6 +86,7 @@ pub fn fetch(popup: &Popup, mode: Mode) -> Result<Data> {
     }
     Ok(Data {
         panes,
+        agents,
         states,
         favorites,
         session_dirs,
@@ -96,9 +101,11 @@ pub fn build(data: &Data, mode: Mode) -> Vec<Row> {
         Mode::Sessions => sessions::rows(&groups, data, false),
         Mode::Windows => sessions::rows(&groups, data, true),
         Mode::Projects => projects::rows(&groups, data),
+        // Waiting first says more than a star there.
+        Mode::Agents => return agents::rows(data),
     };
-    // Starred first, in every mode. The sort is stable, so each mode's own
-    // order holds on either side, and window rows, which carry their
+    // Starred first in the other modes. The sort is stable, so each mode's
+    // own order holds on either side, and window rows, which carry their
     // session's name, stay under their session.
     rows.sort_by_key(|row| !data.favorites.contains(&row.name));
     rows
@@ -256,17 +263,20 @@ mod tests {
             active: true,
             window_panes: 1,
             id: format!("%{}", &window.0[1..]),
+            index: 0,
             pid: 1,
             dead: false,
             tty: String::new(),
             at_prompt: true,
             record: None,
+            path: format!("/nowhere/{}", session.1),
         }
     }
 
     fn data(panes: Vec<Pane>) -> Data {
         Data {
             panes,
+            agents: HashMap::new(),
             states: BTreeMap::new(),
             favorites: BTreeSet::new(),
             session_dirs: HashMap::new(),
@@ -427,6 +437,56 @@ mod tests {
              but started elsewhere (api, zed) does not claim it, as in \
              projects::open, so the project is named after the session Enter \
              will make, and the star on the session zed stays with it"
+        );
+    }
+
+    #[test]
+    fn agents_list_one_row_per_agent_waiting_first() {
+        use crate::agent::{Reason, Status};
+        let mut d = data(vec![
+            pane(("$0", "alpha"), ("@0", 0, "zsh")),
+            pane(("$0", "alpha"), ("@1", 1, "claude")),
+            pane(("$1", "beta"), ("@2", 0, "codex")),
+            pane(("$1", "beta"), ("@3", 1, "ended")),
+        ]);
+        // Window @1 is split; its agent sits in pane 1.
+        d.panes[1].window_panes = 2;
+        d.panes[1].index = 1;
+        d.panes[1].path = format!("{}/work/api", crate::paths::home().display());
+        d.favorites.insert("alpha".into());
+        let mut agent = |pane: &str, harness, state, reason| {
+            let status = Status::new(state, reason);
+            d.agents.insert(pane.into(), Agent { harness, status });
+        };
+        agent("%1", "claude", State::Working, None);
+        agent("%2", "codex", State::Waiting, Some(Reason::Permission));
+        agent("%3", "claude", State::Plain, None);
+
+        let rows = build(&d, Mode::Agents);
+        let ids: Vec<String> = rows.iter().map(|r| r.id.to_string()).collect();
+        assert_eq!(
+            ids,
+            ["%2", "%1"],
+            "waiting before working, a star changes nothing, and an agent \
+             with nothing to do is no row"
+        );
+        let [tree, crumb, dots, badge] = fields(&rows[0]);
+        assert_eq!(
+            (tree.as_str(), dots.as_str(), badge.as_str()),
+            (
+                "  codex   beta:0     codex   /nowhere/beta",
+                "●",
+                "permission"
+            )
+        );
+        assert_eq!(tree, crumb, "nothing to hide while filtering");
+        assert_eq!(rows[0].id, RowId::Pane("%2".into()));
+        assert_eq!(rows[0].name, "beta", "ctrl-s stars the pane's session");
+        let [tree, _, _, badge] = fields(&rows[1]);
+        assert_eq!(
+            (tree.as_str(), badge.as_str()),
+            ("★ claude  alpha:1.1  claude  ~/work/api", ""),
+            "a split window names the pane; home is ~"
         );
     }
 

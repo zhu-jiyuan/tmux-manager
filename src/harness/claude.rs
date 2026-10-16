@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use super::{CommandLine, Harness, Hints, Hook, Update};
-use crate::agent::State;
+use crate::agent::{Reason, State};
 use crate::install;
 
 pub struct Claude;
@@ -24,14 +24,13 @@ const EVENTS: &[&str] = &[
 ];
 /// Tools whose `PreToolUse` means the agent is asking the user something.
 const WAIT_TOOLS: &[&str] = &["askuserquestion", "enterplanmode", "exitplanmode"];
-/// The notifications that ask for the user, out of the many kinds sent.
-const WAIT_NOTIFICATIONS: &[&str] = &["permission_prompt", "idle_prompt", "elicitation_dialog"];
-/// Claude Code's own status line: its permission and plan prompts, its limit
-/// messages, and the busy hint it shows while a turn runs. Since 2.1 the busy
-/// hint is only the spinner line, `✻ Verbing…` then `✻ Verbing… (3s · …)`;
-/// a finished turn leaves `✻ Verbed for 3s` behind, with no ellipsis.
+/// Claude Code's own status line: its permission prompts, its questions and
+/// plan prompts, and the busy hint it shows while a turn runs. Since 2.1 the
+/// busy hint is only the spinner line, `✻ Verbing…` then `✻ Verbing… (3s ·
+/// …)`; a finished turn leaves `✻ Verbed for 3s` behind, with no ellipsis.
 static HINTS: Hints = Hints::new(
-    r"do you want to (?:proceed|create|make this edit)|enter to confirm|waiting for (?:your|user)|you.ve hit your limit|usage limit reached|rate limit exceeded",
+    r"do you want to (?:proceed|create|make this edit)",
+    r"enter to confirm|waiting for (?:your|user)",
     r"(?m)esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt|^[·✢✳✶✻✽*] [^\n…]+…(?: \(|[ \t]*$)",
 );
 
@@ -61,27 +60,37 @@ impl Harness for Claude {
         if !hook.string("agent_id").is_empty() {
             return None;
         }
-        let state = match hook.event.as_str() {
-            "SessionEnd" => State::Plain,
-            "SessionStart" | "Stop" | "StopFailure" | "PermissionRequest" => State::Waiting,
-            "Notification" if WAIT_NOTIFICATIONS.contains(&hook.string("notification_type")) => {
-                State::Waiting
-            }
+        let (state, reason) = match hook.event.as_str() {
+            "SessionEnd" => (State::Plain, None),
+            "SessionStart" => (State::Waiting, None),
+            "Stop" => (State::Waiting, Some(Reason::Done)),
+            "StopFailure" => (State::Waiting, Some(Reason::Error)),
+            "PermissionRequest" => (State::Waiting, Some(Reason::Permission)),
+            // Of the many kinds sent, the ones that ask for the user. The idle
+            // one comes a minute into any wait, a question's too, so it gives
+            // no reason; it ends a turn the user interrupted, which no hook marks.
+            "Notification" => match hook.string("notification_type") {
+                "permission_prompt" => (State::Waiting, Some(Reason::Permission)),
+                "elicitation_dialog" => (State::Waiting, Some(Reason::Question)),
+                "idle_prompt" => (State::Waiting, None),
+                _ => return None,
+            },
             "PreToolUse" => {
                 let tool = hook.string("tool_name").to_ascii_lowercase();
                 if WAIT_TOOLS.contains(&tool.as_str()) {
-                    State::Waiting
+                    (State::Waiting, Some(Reason::Question))
                 } else {
-                    State::Working
+                    (State::Working, None)
                 }
             }
             "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "PreCompact" => {
-                State::Working
+                (State::Working, None)
             }
             _ => return None,
         };
         Some(Update {
             state,
+            reason,
             event: hook.event,
         })
     }
@@ -94,9 +103,14 @@ impl Harness for Claude {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Status;
 
     fn state(event: Option<&str>, stdin: &str) -> Option<State> {
         Claude.hook(event, stdin).map(|update| update.state)
+    }
+
+    fn reason(event: Option<&str>, stdin: &str) -> Option<Reason> {
+        Claude.hook(event, stdin).and_then(|update| update.reason)
     }
 
     #[test]
@@ -162,14 +176,56 @@ mod tests {
     }
 
     #[test]
-    fn screen_hints() {
-        assert_eq!(HINTS.read("Working (esc to interrupt)"), State::Working);
+    fn events_say_why_it_waits() {
+        assert_eq!(reason(Some("Stop"), ""), Some(Reason::Done));
+        assert_eq!(reason(Some("StopFailure"), ""), Some(Reason::Error));
         assert_eq!(
-            HINTS.read("esc to interrupt\nDo you want to proceed?"),
-            State::Waiting
+            reason(Some("PermissionRequest"), ""),
+            Some(Reason::Permission)
         );
-        assert_eq!(HINTS.read("You’ve hit your limit"), State::Waiting);
-        assert_eq!(HINTS.read("$ "), State::Waiting);
+        assert_eq!(reason(Some("SessionStart"), ""), None);
+        let notification = |kind: &str| {
+            reason(
+                None,
+                &format!(r#"{{"hook_event_name":"Notification","notification_type":"{kind}"}}"#),
+            )
+        };
+        assert_eq!(notification("permission_prompt"), Some(Reason::Permission));
+        assert_eq!(notification("elicitation_dialog"), Some(Reason::Question));
+        assert_eq!(
+            notification("idle_prompt"),
+            None,
+            "idle says nothing of why"
+        );
+        assert_eq!(
+            reason(
+                None,
+                r#"{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion"}"#
+            ),
+            Some(Reason::Question)
+        );
+    }
+
+    #[test]
+    fn screen_hints() {
+        let read = |screen| {
+            let status = HINTS.read(screen);
+            (status.state, status.reason)
+        };
+        assert_eq!(read("Working (esc to interrupt)"), (State::Working, None));
+        assert_eq!(
+            read("esc to interrupt\nDo you want to proceed?"),
+            (State::Waiting, Some(Reason::Permission))
+        );
+        assert_eq!(
+            read("Enter to confirm · Esc to cancel"),
+            (State::Waiting, Some(Reason::Question))
+        );
+        assert_eq!(
+            read("You’ve hit your limit"),
+            (State::Waiting, Some(Reason::Error))
+        );
+        assert_eq!(read("$ "), (State::Waiting, None));
     }
 
     /// The bottom of a 2.1 screen, as `capture-pane` prints it.
@@ -189,26 +245,32 @@ mod tests {
             "✶ Reticulating splines… (running PreToolUse hook · 4s)",
             "* Fermenting… (5m 50s · ↓ 10.6k tokens)",
         ] {
-            assert_eq!(HINTS.read(&screen(spinner)), State::Working, "{spinner}");
+            assert_eq!(
+                HINTS.read(&screen(spinner)).state,
+                State::Working,
+                "{spinner}"
+            );
         }
         assert_eq!(
-            HINTS.read(&screen("✻ Worked for 5s · done 12:31 AM")),
+            HINTS.read(&screen("✻ Worked for 5s · done 12:31 AM")).state,
             State::Waiting,
             "a finished turn"
         );
         assert_eq!(
-            HINTS.read(&screen("⏺ Loading… (please wait)")),
+            HINTS.read(&screen("⏺ Loading… (please wait)")).state,
             State::Waiting,
             "an ellipsis in the transcript is not the spinner"
         );
         assert_eq!(
-            HINTS.read(&format!("{}{}", screen("✻ Waddling…"), "\n".repeat(30))),
+            HINTS
+                .read(&format!("{}{}", screen("✻ Waddling…"), "\n".repeat(30)))
+                .state,
             State::Working,
             "the empty rows under a young session are not the tail"
         );
         assert_eq!(
             HINTS.read(" Do you want to create hello.txt?\n ❯ 1. Yes\n   3. No\n\n Esc to cancel · Tab to amend"),
-            State::Waiting
+            Status::new(State::Waiting, Some(Reason::Permission))
         );
     }
 }

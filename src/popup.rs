@@ -36,6 +36,8 @@ pub enum Mode {
     Sessions,
     Windows,
     Projects,
+    /// One row per pane where an agent works or waits.
+    Agents,
 }
 
 impl Mode {
@@ -45,6 +47,7 @@ impl Mode {
             Mode::Sessions => "sessions> ",
             Mode::Windows => "windows> ",
             Mode::Projects => "projects> ",
+            Mode::Agents => "agents> ",
         }
     }
 
@@ -52,7 +55,8 @@ impl Mode {
         match self {
             Mode::Sessions => Mode::Windows,
             Mode::Windows => Mode::Projects,
-            Mode::Projects => Mode::Sessions,
+            Mode::Projects => Mode::Agents,
+            Mode::Agents => Mode::Sessions,
         }
     }
 
@@ -61,6 +65,7 @@ impl Mode {
             Mode::Sessions => "sessions",
             Mode::Windows => "windows",
             Mode::Projects => "projects",
+            Mode::Agents => "agents",
         }
     }
 
@@ -68,6 +73,7 @@ impl Mode {
         match text.trim() {
             "windows" => Mode::Windows,
             "projects" => Mode::Projects,
+            "agents" => Mode::Agents,
             _ => Mode::Sessions,
         }
     }

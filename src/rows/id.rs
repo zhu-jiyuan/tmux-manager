@@ -1,8 +1,8 @@
 //! What a row stands for, encoded in fzf's first field.
 //!
-//! fzf hands the id back as `{1}` to every row key. A session is `$n` and a
-//! window `@n`, tmux's own ids and valid `-t` targets; a project that has no
-//! session yet is its absolute path. When nothing matches the filter `{1}`
+//! fzf hands the id back as `{1}` to every row key. A session is `$n`, a
+//! window `@n` and a pane `%n`, tmux's own ids and valid `-t` targets; a
+//! project that has no session yet is its absolute path. When nothing matches the filter `{1}`
 //! is empty, and `parse` says so, because tmux would take an empty target to
 //! mean the current session.
 
@@ -13,6 +13,8 @@ use std::path::PathBuf;
 pub enum RowId {
     Session(String),
     Window(String),
+    /// An agent's pane, in the agents list.
+    Pane(String),
     Project(PathBuf),
 }
 
@@ -21,6 +23,7 @@ impl RowId {
         match text.as_bytes().first()? {
             b'$' => Some(RowId::Session(text.to_string())),
             b'@' => Some(RowId::Window(text.to_string())),
+            b'%' => Some(RowId::Pane(text.to_string())),
             b'/' => Some(RowId::Project(PathBuf::from(text))),
             _ => None,
         }
@@ -29,20 +32,22 @@ impl RowId {
     /// The tmux target, for what tmux knows about.
     pub fn target(&self) -> Option<&str> {
         match self {
-            RowId::Session(id) | RowId::Window(id) => Some(id),
+            RowId::Session(id) | RowId::Window(id) | RowId::Pane(id) => Some(id),
             RowId::Project(_) => None,
         }
     }
 
-    pub fn is_window(&self) -> bool {
-        matches!(self, RowId::Window(_))
+    /// Whether renaming the row renames a window: a window's, or the window
+    /// a pane sits in.
+    pub fn names_window(&self) -> bool {
+        matches!(self, RowId::Window(_) | RowId::Pane(_))
     }
 }
 
 impl fmt::Display for RowId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RowId::Session(id) | RowId::Window(id) => f.write_str(id),
+            RowId::Session(id) | RowId::Window(id) | RowId::Pane(id) => f.write_str(id),
             RowId::Project(path) => write!(f, "{}", path.display()),
         }
     }
@@ -59,7 +64,8 @@ mod tests {
         assert_eq!(RowId::parse("/x/y"), Some(RowId::Project("/x/y".into())));
         assert_eq!(RowId::parse(""), None, "an empty {{1}} is not a row");
         assert_eq!(RowId::parse("name"), None);
-        for text in ["$3", "@7", "/x/y"] {
+        assert_eq!(RowId::parse("%2"), Some(RowId::Pane("%2".into())));
+        for text in ["$3", "@7", "%2", "/x/y"] {
             assert_eq!(RowId::parse(text).unwrap().to_string(), text);
         }
         assert_eq!(RowId::parse("/x").unwrap().target(), None);

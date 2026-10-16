@@ -467,7 +467,7 @@ fn inline_prompts_and_closing() {
     let missing = server.tm(&["close", "$999"]);
     assert!(missing.starts_with("change-header(tm:"), "{missing}");
 
-    for prompt in ["windows> ", "projects> ", "sessions> "] {
+    for prompt in ["windows> ", "projects> ", "agents> ", "sessions> "] {
         let switched = server.tm(&["mode"]);
         assert!(
             switched.starts_with(&format!("change-prompt({prompt})+reload-sync(")),
@@ -840,6 +840,106 @@ fn agent_activity_from_hooks_and_from_the_screen() {
 }
 
 #[test]
+fn agents_list_jumps_previews_and_closes() {
+    let Some(server) = Server::start("agents") else {
+        return;
+    };
+    // Fake agents as in agent_activity_from_hooks_and_from_the_screen: a
+    // shell whose argv[0] names the harness, with /bin/sh as the default
+    // shell so neither looks like a pane at its prompt.
+    let fake = |name: &str| {
+        let path = server.state.join(name);
+        std::os::unix::fs::symlink("/bin/sh", &path).unwrap();
+        format!("exec {}", path.to_str().unwrap())
+    };
+    server.tmux(&["set", "-g", "default-shell", "/bin/sh"]);
+    server.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        "alpha:",
+        "-n",
+        "agent",
+        &fake("claude"),
+    ]);
+    server.tmux(&["new-session", "-d", "-s", "beta", "-x", "120", "-y", "40"]);
+    server.tmux(&["split-window", "-d", "-t", "beta:0", &fake("codex")]);
+    let pane = |target: &str| server.tmux(&["display-message", "-p", "-t", target, "#{pane_id}"]);
+    let (claude, codex) = (pane("alpha:1"), pane("beta:0.1"));
+    let screen = |target: &str| server.tmux(&["capture-pane", "-p", "-t", target]);
+    assert!(
+        eventually(|| !screen(&claude).is_empty() && !screen(&codex).is_empty()),
+        "the fake agents never showed their prompts"
+    );
+    // Claude shows its busy hint; Codex asks for a permission through its hook.
+    server.tmux(&["send-keys", "-t", &claude, "esc to interrupt", "Enter"]);
+    server.tmux(&[
+        "send-keys",
+        "-t",
+        &codex,
+        &format!("{TM} hook codex PermissionRequest"),
+        "Enter",
+    ]);
+    assert!(eventually(|| {
+        server
+            .tmux(&["show-options", "-pqv", "-t", &codex, "@tm-agent"])
+            .contains("permission")
+    }));
+
+    let rows = server.tm(&["list", "--agents"]);
+    assert_eq!(
+        ids(&rows),
+        [codex.clone(), claude.clone()],
+        "waiting first: {rows}"
+    );
+    let fields = |row: &str| -> Vec<String> { row.split('\t').map(plain).collect() };
+    let first = fields(rows.lines().next().unwrap());
+    assert_eq!(first[1], "beta", "ctrl-s stars the pane's session");
+    assert!(
+        first[2].starts_with("  codex   beta:0.1  ") && first[5] == "permission",
+        "a split window names the pane, and the hook says why: {first:?}"
+    );
+    assert!(fields(rows.lines().nth(1).unwrap())[2].starts_with("  claude  alpha:1   agent"));
+
+    // An agent's row previews its own pane.
+    let preview = plain(&server.tm(&["preview", &codex]));
+    assert!(preview.starts_with("beta  ·  0: "), "{preview:?}");
+    assert!(
+        preview.contains("2 panes") && preview.contains("hook codex"),
+        "{preview:?}"
+    );
+
+    // tab reaches the agents after the projects; keys act on the pane's window.
+    server.tm(&["mode", "--projects"]);
+    assert!(server.tm(&["mode"]).starts_with("change-prompt(agents> )"));
+    assert!(
+        server
+            .tm(&["prompt", "create", &claude])
+            .contains("New window in alpha")
+    );
+    server.tm(&["esc"]);
+    server.answer("rename", &claude, "renamed");
+    assert_eq!(
+        server.tmux(&["display-message", "-p", "-t", "alpha:1", "#{window_name}"]),
+        "renamed"
+    );
+
+    // Enter takes the client to the pane itself, not just its window.
+    let client = server.attach("alpha");
+    server.pick(&["--agents"], &codex, "");
+    assert!(server.fzf().0.contains("\nagents> \n"));
+    assert_eq!(server.showing(&client), "beta:0");
+    assert_eq!(pane("beta:0"), codex, "the agent's pane is the active one");
+
+    // ctrl-x closes the pane, the agent with it, and nothing more.
+    assert!(server.tm(&["close", &codex]).starts_with("reload-sync("));
+    assert!(eventually(
+        || !ids(&server.tm(&["list", "--agents"])).contains(&codex)
+    ));
+    assert_eq!(server.sessions(), ["alpha", "beta"]);
+}
+
+#[test]
 fn projects_mode_lists_and_opens_directories() {
     let Some(server) = Server::start("projects") else {
         return;
@@ -960,9 +1060,9 @@ fn projects_mode_lists_and_opens_directories() {
     assert!(server.tm(&["close", &id]).starts_with("reload-sync("));
     assert!(!server.sessions().contains(&"alpha-app".to_string()));
 
-    // tab cycles sessions → windows → projects → sessions.
+    // tab cycles sessions → windows → projects → agents → sessions.
     server.tm(&["mode", "--sessions"]);
-    for prompt in ["windows> ", "projects> ", "sessions> "] {
+    for prompt in ["windows> ", "projects> ", "agents> ", "sessions> "] {
         let switched = server.tm(&["mode"]);
         assert!(
             switched.contains(&format!("change-prompt({prompt})")),

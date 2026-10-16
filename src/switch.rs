@@ -8,10 +8,10 @@
 //! `--bind` strings, so the only process alive while the user navigates is
 //! fzf itself; each key runs one short `tm` subcommand (see `actions`).
 //!
-//! The picker has three modes (see `popup::Mode`): sessions, windows and
-//! projects. `prefix + s`, `prefix + w` and `prefix + f` pick the initial
-//! one, `tm` alone starts on the projects when there are any, and `tab`
-//! cycles.
+//! The picker has four modes (see `popup::Mode`): sessions, windows,
+//! projects and agents. `prefix + s`, `prefix + w`, `prefix + f` and
+//! `prefix + a` pick the initial one, `tm` alone starts on the projects when
+//! there are any, and `tab` cycles.
 //!
 //! Window rows have two name columns (see `rows`): a tree for browsing and
 //! breadcrumbs for filtering. fzf cannot match text it does not show, so the
@@ -91,7 +91,7 @@ enum Client {
     Terminal,
 }
 
-/// `prefix + s`, `w` or `f`: the picker in a popup of `client`. The popup
+/// `prefix + s`, `w`, `f` or `a`: the picker in a popup of `client`. The popup
 /// closes the moment tm exits, so stderr would go unseen: a failure goes to
 /// the client's status line.
 pub fn popup(client: &str, mode: Option<Mode>) {

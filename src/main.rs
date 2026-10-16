@@ -62,6 +62,9 @@ struct ModeFlags {
     /// Start on the project list
     #[arg(long)]
     projects: bool,
+    /// Start on the agent list: every pane where an agent works or waits
+    #[arg(long)]
+    agents: bool,
 }
 
 impl ModeFlags {
@@ -72,6 +75,8 @@ impl ModeFlags {
             Some(popup::Mode::Windows)
         } else if self.projects {
             Some(popup::Mode::Projects)
+        } else if self.agents {
+            Some(popup::Mode::Agents)
         } else {
             None
         }
@@ -132,7 +137,7 @@ enum Command {
         kind: actions::PromptKind,
         id: String,
     },
-    /// Close a session or window (ctrl-x)
+    /// Close a session, window or agent's pane (ctrl-x)
     #[command(hide = true)]
     Close { id: String },
     /// Enter: answer the open prompt or accept the row

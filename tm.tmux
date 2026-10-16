@@ -8,6 +8,7 @@
 #   set -g @tm-bin           "/path/to/tm"    # default: tm next to this script or target/release/tm, else a fetched release (checkouts), else ~/.cargo/bin/tm or PATH
 #   set -g @tm-session-key   "s"              # prefix + key: session list (replaces choose-tree -s)
 #   set -g @tm-window-key    "w"              # prefix + key: window list  (replaces choose-tree -w)
+#   set -g @tm-agent-key     "a"              # prefix + key: agent list, every pane where an agent works or waits
 #   set -g @tm-switch-width  "75%"            # popup size, columns or percent
 #   set -g @tm-switch-height "65%"
 #   set -g @tm-projects      "~/work ~/oss:2"  # project roots, scanned 1 level deep (or :N); enables the project list
@@ -69,6 +70,7 @@ bind_popup() {
 
 bind_popup "$(get_opt "@tm-session-key" "s")" "--sessions"
 bind_popup "$(get_opt "@tm-window-key" "w")" "--windows"
+bind_popup "$(get_opt "@tm-agent-key" "a")" "--agents"
 if [ -n "$(get_opt "@tm-projects" "")" ]; then
   bind_popup "$(get_opt "@tm-project-key" "f")" "--projects"
 fi

@@ -134,6 +134,20 @@ fn kill(id: &RowId) -> Result<()> {
             }
             tmux::run(&["kill-window", "-t", window])?;
         }
+        RowId::Pane(pane) => {
+            // The only pane of the only window takes its session with it.
+            let info = tmux::run(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane,
+                "#{window_panes}\t#{session_windows}\t#{session_id}",
+            ])?;
+            if let ["1", "1", session] = info.split('\t').collect::<Vec<_>>()[..] {
+                park_clients(session)?;
+            }
+            tmux::run(&["kill-pane", "-t", pane])?;
+        }
         RowId::Session(session) => {
             park_clients(session)?;
             tmux::run(&["kill-session", "-t", session])?;
@@ -143,7 +157,7 @@ fn kill(id: &RowId) -> Result<()> {
     Ok(())
 }
 
-/// `ctrl-x`: close a session or window right away.
+/// `ctrl-x`: close a session, window or agent's pane right away.
 pub fn close(id: &str) -> Result<()> {
     let Some(id) = RowId::parse(id) else {
         return Ok(());
@@ -260,7 +274,7 @@ pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
     let popup = Popup::current();
     let [session_id, session, index, window] = describe(target)?;
     let (question, header) = match kind {
-        PromptKind::Rename if id.is_window() => (
+        PromptKind::Rename if id.names_window() => (
             Question::RenameWindow {
                 window: target.to_string(),
                 old: window.clone(),
@@ -274,7 +288,8 @@ pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
             },
             format!("Rename session {session} · Enter / Esc"),
         ),
-        PromptKind::Create if popup.mode() == Mode::Windows => (
+        // An agent's row stands in its window, so a new one goes beside it.
+        PromptKind::Create if matches!(popup.mode(), Mode::Windows | Mode::Agents) => (
             Question::NewWindow {
                 session: session_id,
             },

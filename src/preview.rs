@@ -21,7 +21,7 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
 
-use crate::agent::{self, State};
+use crate::agent::{self, Agent, State};
 use crate::ansi::{Colour, bold, clip_line, faint, fit_frame, tint};
 use crate::popup::{Popup, Sidecar};
 use crate::projects;
@@ -41,7 +41,7 @@ fn choices(popup: &Popup) -> Result<BTreeMap<String, String>> {
 /// tie, the active window, else the first; within a window, its active pane.
 fn pick<'a>(
     panes: &'a [Pane],
-    states: &HashMap<String, State>,
+    agents: &HashMap<String, Agent>,
     window: Option<&str>,
 ) -> Option<&'a Pane> {
     let window = window.filter(|id| panes.iter().any(|pane| pane.window_id == *id));
@@ -51,7 +51,9 @@ fn pick<'a>(
         // max_by_key keeps the last of equals; reversed, that is the first.
         .rev()
         .max_by_key(|pane| {
-            let state = states.get(&pane.id).copied().unwrap_or(State::Plain);
+            let state = agents
+                .get(&pane.id)
+                .map_or(State::Plain, |agent| agent.status.state);
             (
                 state,
                 pane.window_active,
@@ -61,17 +63,24 @@ fn pick<'a>(
         })
 }
 
-/// The pane a row previews: the best of a window row's window, or of the
-/// window `ctrl-l` chose for a session row, else of the whole session.
+/// The pane a row previews: an agent's row its own; the best of a window
+/// row's window, or of the window `ctrl-l` chose for a session row, else of
+/// the whole session.
 fn target(popup: &Popup, id: &RowId) -> Result<Pane> {
     let (scope, window) = match id {
+        RowId::Pane(pane) => {
+            return tmux::session_panes(pane)?
+                .into_iter()
+                .find(|found| found.id == *pane)
+                .context("a pane that is gone");
+        }
         RowId::Window(window) => (window, Some(window.clone())),
         RowId::Session(session) => (session, choices(popup)?.remove(session)),
         RowId::Project(path) => bail!("{} has no window", path.display()),
     };
     let panes = tmux::session_panes(scope)?;
-    let states = agent::pane_states(&panes)?;
-    pick(&panes, &states, window.as_deref())
+    let agents = agent::agents(&panes)?;
+    pick(&panes, &agents, window.as_deref())
         .cloned()
         .context("a session with no windows")
 }
@@ -88,9 +97,9 @@ pub fn next(row: &str) -> Result<()> {
 /// shows, wrapping.
 fn advance(popup: &Popup, session: &str) -> Result<()> {
     let panes = tmux::session_panes(session)?;
-    let states = agent::pane_states(&panes)?;
+    let agents = agent::agents(&panes)?;
     let mut choices = choices(popup)?;
-    let Some(now) = pick(&panes, &states, choices.get(session).map(String::as_str)) else {
+    let Some(now) = pick(&panes, &agents, choices.get(session).map(String::as_str)) else {
         return Ok(());
     };
     // A session's panes come window by window, so this leaves one id each.
@@ -302,21 +311,32 @@ mod tests {
             window_active: window == 0,
             window_panes: 2,
             id: format!("%{n}"),
+            index: n,
             active,
             pid: 1,
             dead: false,
             tty: String::new(),
             at_prompt: true,
             record: None,
+            path: "/nowhere".into(),
         }
     }
 
     fn picked(panes: &[Pane], states: &[(&str, State)], window: Option<&str>) -> String {
-        let states = states
+        let agents = states
             .iter()
-            .map(|(id, state)| (id.to_string(), *state))
+            .map(|(id, state)| {
+                let status = agent::Status::new(*state, None);
+                (
+                    id.to_string(),
+                    Agent {
+                        harness: "test",
+                        status,
+                    },
+                )
+            })
             .collect();
-        pick(panes, &states, window).unwrap().id.clone()
+        pick(panes, &agents, window).unwrap().id.clone()
     }
 
     #[test]

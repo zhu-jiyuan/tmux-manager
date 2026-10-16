@@ -38,13 +38,13 @@ run-shell /path/to/tm.tmux
 ## 键位
 
 `prefix + s` 打开 session 列表，`prefix + w` 打开窗口列表，`prefix + f` 打开项目
-列表。打开后直接打字过滤。
+列表，`prefix + a` 打开 agent 列表。打开后直接打字过滤。
 
 | 键 | 动作 |
 |---|---|
 | `Ctrl-j` `Ctrl-k` | 移动，`Ctrl-f` `Ctrl-b` 翻页 |
 | `Enter` | 切换过去；没有匹配时新建同名 session |
-| `Tab` | 在 session / 窗口 / 项目列表之间轮换 |
+| `Tab` | 在 session / 窗口 / 项目 / agent 列表之间轮换 |
 | `Ctrl-o` `Ctrl-r` `Ctrl-x` | 新建 / 改名 / 关闭，都在输入行内完成 |
 | `Ctrl-s` | 收藏，置顶 |
 | `Ctrl-l` | 预览下一个窗口 |
@@ -52,13 +52,14 @@ run-shell /path/to/tm.tmux
 | `Ctrl-/` | 键位提示 |
 | `Esc` | 关闭 |
 
-选项：`@tm-session-key`、`@tm-window-key`、`@tm-project-key`、`@tm-projects`、
-`@tm-switch-width`、`@tm-switch-height`、`@tm-bin`，写在 `run-shell` 之前。
+选项：`@tm-session-key`、`@tm-window-key`、`@tm-project-key`、`@tm-agent-key`、
+`@tm-projects`、`@tm-switch-width`、`@tm-switch-height`、`@tm-bin`，写在
+`run-shell` 之前。
 
 ## 在终端里
 
 `tm` 直接在终端里打开同一个列表，默认是项目列表，没设 `@tm-projects` 时是
-session 列表；`--sessions`、`--windows`、`--projects` 指定列表。在 tmux 里
+session 列表；`--sessions`、`--windows`、`--projects`、`--agents` 指定列表。在 tmux 里
 `Enter` 切换过去；在 tmux 外则 attach 到选中的 session，没有 session 就新建，
 tmux 服务没在运行时一并启动。
 
@@ -75,3 +76,12 @@ set -g @tm-projects "~/work ~/oss:2"
 用别的方式开的也能对上。没有匹配时输入一个路径按 `Enter` 直接打开它。没设这个
 选项时 `prefix + f` 保持 tmux 原来的功能。这个选项写在 tmux 配置里，所以在
 tmux 外、服务没在运行时，`tm` 会先启动服务来读取它。
+
+## Agent
+
+`prefix + a` 列出所有正在运行或在等你的 Claude Code / Codex pane，等你的排在
+前面。每行显示 harness、pane 的位置（`session:window`，窗口分屏时加 `.pane`）、
+窗口名、目录、状态点，以及能判断出来时它在等什么：`permission`、`question`、
+`done` 或 `error`。`Enter` 直接跳到那个 pane，预览显示的也是它，`Ctrl-x` 关掉
+它，agent 也随之结束。等待原因主要来自 hook，所以先运行 `tm install-hooks`；
+没装 hook 时只有屏幕上出现提问或额度提示才能看出原因。

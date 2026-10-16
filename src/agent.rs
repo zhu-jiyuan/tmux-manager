@@ -38,6 +38,52 @@ pub enum State {
     Waiting,
 }
 
+/// Why an agent waits, when it says: the kinds of OSC 7501's `blocked`,
+/// and the two ways a turn ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Reason {
+    /// A tool needs approval.
+    Permission,
+    /// It asked the user something.
+    Question,
+    /// The turn finished.
+    Done,
+    /// The turn failed, or a limit stopped it.
+    Error,
+}
+
+impl Reason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Reason::Permission => "permission",
+            Reason::Question => "question",
+            Reason::Done => "done",
+            Reason::Error => "error",
+        }
+    }
+}
+
+/// What an agent is doing and, if it is known, why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Status {
+    pub state: State,
+    pub reason: Option<Reason>,
+}
+
+impl Status {
+    pub fn new(state: State, reason: Option<Reason>) -> Self {
+        Status { state, reason }
+    }
+}
+
+/// The agent in one pane: which harness runs it, and its status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Agent {
+    pub harness: &'static str,
+    pub status: Status,
+}
+
 struct Process {
     parent: i32,
     started: String,
@@ -107,18 +153,19 @@ fn descendants(root: i32, table: &Table) -> HashSet<i32> {
     found
 }
 
-/// State of one pane whose process tree starts at `root`, given the record
-/// stored on it. The record is live when its pid runs a harness in the tree
-/// and its start time matches, so a reused PID cannot resurrect a stale one;
-/// only the harness running that pid gets it. Every harness found in the
-/// tree answers, and the strongest answer wins. The screen is captured at
-/// most once, and only if a harness asks for it.
-fn pane_state(
+/// The agent in one pane whose process tree starts at `root`, given the
+/// record stored on it; none when no harness runs there. The record is live
+/// when its pid runs a harness in the tree and its start time matches, so a
+/// reused PID cannot resurrect a stale one; only the harness running that
+/// pid gets it. Every harness found in the tree answers, and the strongest
+/// state wins. The screen is captured at most once, and only if a harness
+/// asks for it.
+fn pane_agent(
     root: i32,
     record: Option<&str>,
     table: &Table,
     capture: impl Fn() -> String,
-) -> State {
+) -> Option<Agent> {
     let agents: HashMap<i32, &'static dyn Harness> = descendants(root, table)
         .into_iter()
         .filter_map(|pid| harness::detect(&table.get(&pid)?.command).map(|h| (pid, h)))
@@ -140,30 +187,20 @@ fn pane_state(
             let own = live
                 .as_ref()
                 .filter(|saved| agents[&saved.pid].name() == harness.name());
-            harness.pane_state(own, &screen)
+            Agent {
+                harness: harness.name(),
+                status: harness.pane_state(own, &screen),
+            }
         })
-        .max()
-        .unwrap_or(State::Plain)
+        .max_by_key(|agent| agent.status.state)
 }
 
-/// One state per window, keyed by window id: the strongest of its panes.
-pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
-    let states = pane_states(panes)?;
-    let mut windows = BTreeMap::new();
-    for pane in panes {
-        let window = windows
-            .entry(pane.window_id.clone())
-            .or_insert(State::Plain);
-        *window = (*window).max(states[&pane.id]);
-    }
-    Ok(windows)
-}
-
-/// One state per pane, keyed by pane id. A pane could hold an agent
-/// when something other than the shell is in front or a hook record is
-/// on it; which harness, if any, is left to its command line in `ps`,
-/// never guessed from a name. `TM_AGENT_SCAN=always` checks every pane.
-pub fn pane_states(panes: &[Pane]) -> Result<HashMap<String, State>> {
+/// The agents in `panes`, keyed by pane id; a pane with none is left out. A
+/// pane could hold an agent when something other than the shell is in front
+/// or a hook record is on it; which harness, if any, is left to its command
+/// line in `ps`, never guessed from a name. `TM_AGENT_SCAN=always` checks
+/// every pane.
+pub fn agents(panes: &[Pane]) -> Result<HashMap<String, Agent>> {
     let always = env::var("TM_AGENT_SCAN").is_ok_and(|v| v == "always");
     // A record catches the agents a shell runs from a command line, which
     // look like a pane at its prompt.
@@ -178,19 +215,37 @@ pub fn pane_states(panes: &[Pane]) -> Result<HashMap<String, State>> {
 
     Ok(panes
         .iter()
-        .map(|pane| {
-            let state = if suspicious(pane) {
-                pane_state(pane.pid, pane.record.as_deref(), &table, || {
-                    // The visible pane plus 20 lines of history, so a short pane
-                    // still fills the tail the hints read.
-                    tmux::run_lossy(&["capture-pane", "-p", "-t", &pane.id, "-S", "-20"])
-                })
-            } else {
-                State::Plain
-            };
-            (pane.id.clone(), state)
+        .filter(|pane| suspicious(pane))
+        .filter_map(|pane| {
+            let agent = pane_agent(pane.pid, pane.record.as_deref(), &table, || {
+                // The visible pane plus 20 lines of history, so a short pane
+                // still fills the tail the hints read.
+                tmux::run_lossy(&["capture-pane", "-p", "-t", &pane.id, "-S", "-20"])
+            })?;
+            Some((pane.id.clone(), agent))
         })
         .collect())
+}
+
+/// One state per window of `panes`, keyed by window id: the strongest of
+/// its panes' agents, plain where there is none.
+pub fn by_window(panes: &[Pane], agents: &HashMap<String, Agent>) -> BTreeMap<String, State> {
+    let mut windows = BTreeMap::new();
+    for pane in panes {
+        let state = agents
+            .get(&pane.id)
+            .map_or(State::Plain, |agent| agent.status.state);
+        let window = windows
+            .entry(pane.window_id.clone())
+            .or_insert(State::Plain);
+        *window = (*window).max(state);
+    }
+    windows
+}
+
+/// One state per window on the server, keyed by window id.
+pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
+    Ok(by_window(panes, &agents(panes)?))
 }
 
 /// Called by a harness's hook. Asks the harness what the call means, finds
@@ -231,6 +286,7 @@ pub fn hook(name: &str, event: Option<&str>) -> Result<()> {
     };
     let record = Record {
         state: update.state,
+        reason: update.reason,
         pid,
         started,
         harness: name.to_string(),
@@ -252,6 +308,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn state_of(root: i32, record: Option<&str>, table: &Table, screen: fn() -> String) -> State {
+        pane_agent(root, record, table, screen).map_or(State::Plain, |agent| agent.status.state)
+    }
+
     #[test]
     fn stale_records_fall_back_to_the_screen() {
         let table = |command: &str| {
@@ -268,11 +328,11 @@ mod tests {
         };
         let stale = json!({"pid": 10, "started": "old", "state": "working", "harness": "codex", "event": "x"}).to_string();
         assert_eq!(
-            pane_state(10, Some(&stale), &table("codex"), || "ready".into()),
+            state_of(10, Some(&stale), &table("codex"), || "ready".into()),
             State::Waiting
         );
         assert_eq!(
-            pane_state(10, Some(&stale), &table("bash"), || {
+            state_of(10, Some(&stale), &table("bash"), || {
                 "esc to interrupt".into()
             }),
             State::Plain,
@@ -280,11 +340,11 @@ mod tests {
         );
         let fresh = json!({"pid": 10, "started": "new", "state": "working", "harness": "codex", "event": "x"}).to_string();
         assert_eq!(
-            pane_state(10, Some(&fresh), &table("codex"), || "ready".into()),
+            state_of(10, Some(&fresh), &table("codex"), || "ready".into()),
             State::Working
         );
         assert_eq!(
-            pane_state(10, None, &table("codex"), || "ready".into()),
+            state_of(10, None, &table("codex"), || "ready".into()),
             State::Waiting,
             "no record: the harness reads the screen"
         );

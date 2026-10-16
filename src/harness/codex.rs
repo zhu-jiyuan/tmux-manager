@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use super::{CommandLine, Harness, Hints, Hook, Update};
-use crate::agent::State;
+use crate::agent::{Reason, State};
 use crate::install;
 
 pub struct Codex;
@@ -24,10 +24,11 @@ const EVENTS: &[&str] = &[
 /// Tools whose `PreToolUse` means the agent is asking the user something.
 /// Codex names them `functions.request_user_input`; only the last part counts.
 const WAIT_TOOLS: &[&str] = &["request_user_input", "request_user_input_async"];
-/// Codex's own status line: its approval prompts, its limit messages, and
-/// the busy hint it shows while a turn runs.
+/// Codex's own status line: its approval prompts, its questions, and the
+/// busy hint it shows while a turn runs.
 static HINTS: Hints = Hints::new(
-    r"would you like to run|requires? (?:your )?approval|enter to confirm|waiting for (?:your|user)|you.ve hit your limit|usage limit reached|rate limit exceeded",
+    r"would you like to run|requires? (?:your )?approval",
+    r"enter to confirm|waiting for (?:your|user)",
     r"esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt",
 );
 
@@ -60,23 +61,28 @@ impl Harness for Codex {
         if !hook.string("agent_id").is_empty() {
             return None;
         }
-        let state = match hook.event.as_str() {
-            "SessionEnd" => State::Plain,
-            "SessionStart" | "Stop" | "Interrupt" | "PermissionRequest" => State::Waiting,
+        let (state, reason) = match hook.event.as_str() {
+            "SessionEnd" => (State::Plain, None),
+            "SessionStart" | "Interrupt" => (State::Waiting, None),
+            "Stop" => (State::Waiting, Some(Reason::Done)),
+            "PermissionRequest" => (State::Waiting, Some(Reason::Permission)),
             "PreToolUse" => {
                 let tool = hook.string("tool_name");
                 let tool = tool.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
                 if WAIT_TOOLS.contains(&tool.as_str()) {
-                    State::Waiting
+                    (State::Waiting, Some(Reason::Question))
                 } else {
-                    State::Working
+                    (State::Working, None)
                 }
             }
-            "UserPromptSubmit" | "PostToolUse" | "PreCompact" | "PostCompact" => State::Working,
+            "UserPromptSubmit" | "PostToolUse" | "PreCompact" | "PostCompact" => {
+                (State::Working, None)
+            }
             _ => return None,
         };
         Some(Update {
             state,
+            reason,
             event: hook.event,
         })
     }
@@ -134,16 +140,36 @@ mod tests {
             None,
             "a spawned agent's hooks say nothing about the parent"
         );
+        let reason = |event| Codex.hook(Some(event), "").and_then(|update| update.reason);
+        assert_eq!(reason("Stop"), Some(Reason::Done));
+        assert_eq!(reason("PermissionRequest"), Some(Reason::Permission));
+        assert_eq!(reason("Interrupt"), None);
+        assert_eq!(
+            Codex
+                .hook(
+                    None,
+                    r#"{"hook_event_name":"PreToolUse","tool_name":"functions.request_user_input"}"#
+                )
+                .and_then(|update| update.reason),
+            Some(Reason::Question)
+        );
     }
 
     #[test]
     fn screen_hints() {
-        assert_eq!(HINTS.read("Working (esc to interrupt)"), State::Working);
+        let read = |screen| {
+            let status = HINTS.read(screen);
+            (status.state, status.reason)
+        };
+        assert_eq!(read("Working (esc to interrupt)"), (State::Working, None));
         assert_eq!(
-            HINTS.read("esc to interrupt\nWould you like to run the command?"),
-            State::Waiting
+            read("esc to interrupt\nWould you like to run the command?"),
+            (State::Waiting, Some(Reason::Permission))
         );
-        assert_eq!(HINTS.read("This action requires approval"), State::Waiting);
-        assert_eq!(HINTS.read("$ "), State::Waiting);
+        assert_eq!(
+            read("This action requires approval"),
+            (State::Waiting, Some(Reason::Permission))
+        );
+        assert_eq!(read("$ "), (State::Waiting, None));
     }
 }
