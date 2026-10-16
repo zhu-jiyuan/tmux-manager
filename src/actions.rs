@@ -19,9 +19,9 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::popup::{Mode, Popup, Sidecar};
-use crate::rows::RowId;
+use crate::rows::{self, RowId};
 use crate::state::Switcher;
-use crate::switch::{FILTER_FIELDS, LEGEND, TREE_FIELDS};
+use crate::switch::{self, FILTER_FIELDS, LEGEND, TREE_FIELDS};
 use crate::{fzf, tmux};
 
 /// What is typed on fzf's input line; nothing, run from a shell.
@@ -53,9 +53,9 @@ pub fn favorite(name: &str) -> Result<()> {
     state.save()
 }
 
-/// `tab`: move to `mode`, else the next one; rename the prompt, reload the
-/// rows. An open prompt is cancelled, since its question was about the old
-/// list.
+/// `tab`: move to `mode`, else the next one; rename the prompt, size the
+/// preview to the new rows and show them. An open prompt is cancelled, since
+/// its question was about the old list.
 pub fn mode(mode: Option<Mode>) -> Result<()> {
     let popup = Popup::current();
     let mode = mode.unwrap_or_else(|| popup.mode().next());
@@ -64,7 +64,21 @@ pub fn mode(mode: Option<Mode>) -> Result<()> {
         Some(pending) => restore(&popup, &pending.query),
         None => format!("change-prompt({})", mode.prompt()),
     };
-    println!("{back}+{}", reload());
+    // The rows are needed to size the preview, so the popup shows these very
+    // rows rather than asking `tm list` for them again.
+    let text = rows::text(&popup, mode)?;
+    let window = switch::preview_for(&text);
+    let show = match popup.snapshot().filter(|_| popup.exists()) {
+        Some(snapshot) => {
+            popup.write_snapshot(&text)?;
+            format!(
+                "reload-sync(cat {})",
+                fzf::quote(&snapshot.to_string_lossy())
+            )
+        }
+        None => reload(),
+    };
+    println!("{back}+change-preview-window({window})+{show}");
     Ok(())
 }
 

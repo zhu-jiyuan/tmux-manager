@@ -63,26 +63,75 @@ fn pick<'a>(
         })
 }
 
-/// The pane a row previews: an agent's row its own; the best of a window
-/// row's window, or of the window `ctrl-l` chose for a session row, else of
-/// the whole session.
-fn target(popup: &Popup, id: &RowId) -> Result<Pane> {
+/// The pane a row previews and its agent, if one works or waits there: an
+/// agent's row its own pane; the best of a window row's window, or of the
+/// window `ctrl-l` chose for a session row, else of the whole session.
+fn target(popup: &Popup, id: &RowId) -> Result<(Pane, Option<Agent>)> {
     let (scope, window) = match id {
-        RowId::Pane(pane) => {
-            return tmux::session_panes(pane)?
-                .into_iter()
-                .find(|found| found.id == *pane)
-                .context("a pane that is gone");
-        }
+        RowId::Pane(pane) => (pane, None),
         RowId::Window(window) => (window, Some(window.clone())),
         RowId::Session(session) => (session, choices(popup)?.remove(session)),
         RowId::Project(path) => bail!("{} has no window", path.display()),
     };
-    let panes = tmux::session_panes(scope)?;
+    let mut panes = tmux::session_panes(scope)?;
+    if let RowId::Pane(pane) = id {
+        panes.retain(|found| found.id == *pane);
+    }
     let agents = agent::agents(&panes)?;
-    pick(&panes, &agents, window.as_deref())
-        .cloned()
-        .context("a session with no windows")
+    let pane = pick(&panes, &agents, window.as_deref()).context("a pane that is gone")?;
+    let agent = agents
+        .get(&pane.id)
+        .filter(|agent| agent.status.state > State::Plain)
+        .copied();
+    Ok((pane.clone(), agent))
+}
+
+/// The lines above an agent's screen: its dot, harness, state, and why and
+/// since when it waits; then, faint, where it is.
+fn agent_header(pane: &Pane, agent: &Agent, columns: usize) -> String {
+    let status = agent.status;
+    let mut state = vec![
+        match status.state {
+            State::Working => "working",
+            _ => "waiting",
+        }
+        .to_string(),
+    ];
+    let why = [
+        status.reason.map(|reason| reason.label().to_string()),
+        status.since.map(|since| agent::age(since, agent::now())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if !why.is_empty() {
+        state.push(why.join(" "));
+    }
+    let mut location = format!("{}:{}", pane.session_name, pane.window_index);
+    if pane.window_panes > 1 {
+        location.push_str(&format!(".{}", pane.index));
+    }
+    let place = format!("{location} · {}", projects::shorten(Path::new(&pane.path)));
+    let first = format!(
+        "{} {}{}",
+        dot(status.state),
+        bold(agent.harness),
+        faint(&format!(" · {}", state.join(" · ")))
+    );
+    format!(
+        "{}\n{}",
+        clip_line(&first, columns),
+        clip_line(&faint(&place), columns)
+    )
+}
+
+/// The dot the rows show for `state`.
+fn dot(state: State) -> String {
+    let colour = match state {
+        State::Working => Colour::Green,
+        _ => Colour::Yellow,
+    };
+    tint("●", colour)
 }
 
 /// `ctrl-l`: move a session row's preview to its next window, wrapping.
@@ -114,26 +163,34 @@ fn advance(popup: &Popup, session: &str) -> Result<()> {
     popup.write_json(Sidecar::Preview, &choices)
 }
 
-/// One frame: a bold title line, a blank line, then the captured screen,
-/// clipped to the viewport so fzf shows no scroll indicator. A project with
-/// no session previews its directory instead.
+/// One frame: a header, a blank line, then the captured screen, fitted to
+/// the viewport. The header is an agent's status when one works or waits in
+/// the pane, else a bold title naming the window. A project with no session
+/// previews its directory instead.
 fn render(popup: &Popup, id: &RowId, columns: usize, lines: usize) -> String {
     if let RowId::Project(path) = id {
         return directory(path, columns, lines);
     }
-    let Ok(pane) = target(popup, id) else {
+    let Ok((pane, agent)) = target(popup, id) else {
         return bold(GONE);
     };
-    let mut title = format!(
-        "{}  ·  {}: {}",
-        pane.session_name, pane.window_index, pane.window_name
-    );
-    if pane.window_panes > 1 {
-        title.push_str(&format!("  ·  {} panes", pane.window_panes));
-    }
+    let header = match &agent {
+        Some(agent) => agent_header(&pane, agent, columns),
+        None => {
+            let mut title = format!(
+                "{}  ·  {}: {}",
+                pane.session_name, pane.window_index, pane.window_name
+            );
+            if pane.window_panes > 1 {
+                title.push_str(&format!("  ·  {} panes", pane.window_panes));
+            }
+            bold(&clip_line(&title, columns))
+        }
+    };
     let capture = tmux::run_lossy(&["capture-pane", "-p", "-e", "-t", &pane.id]);
-    let frame = fit_frame(&capture, columns, lines.saturating_sub(2));
-    let text = format!("{}\n\n{frame}", bold(&clip_line(&title, columns)));
+    let below = header.lines().count() + 1;
+    let frame = fit_frame(&capture, columns, lines.saturating_sub(below));
+    let text = format!("{header}\n\n{frame}");
     // An empty capture would leave trailing newlines; fzf counts those as lines.
     text.trim_end_matches('\n').to_string()
 }
@@ -319,6 +376,7 @@ mod tests {
             at_prompt: true,
             record: None,
             path: "/nowhere".into(),
+            title: String::new(),
         }
     }
 

@@ -91,10 +91,12 @@ tmux, with no server running, `tm` starts one to read it.
 ## Agents
 
 `prefix + a` lists every pane where Claude Code or Codex works or waits,
-the waiting ones first. Each row shows the harness, where the pane is
-(`session:window`, plus `.pane` in a split window), the window's name, its
-directory, the dot, and why the agent waits when it can tell: `permission`,
-`question`, `done` or `error`. `Enter` jumps to the pane itself, the
-preview shows that pane, and `Ctrl-x` closes it, which ends the agent. The
-reasons come mostly from the hooks, so run `tm install-hooks` first;
-without them only a question or limit on screen gives one.
+the waiting ones first. Each agent takes two lines: the dot and the
+session's title (its directory when it has none), then the harness, where
+the pane is (`session:window`, plus `.pane` in a split window), the
+directory, and why it waits and for how long: `permission`, `question`,
+`done` or `error`. Typing searches both lines, and the two move as one row.
+`Enter` jumps to the pane itself, the preview shows it under the agent's
+status, and `Ctrl-x` closes it, which ends the agent. The reasons and times
+come from the hooks, so run `tm install-hooks` first; without them only a
+question or limit on screen gives a reason.

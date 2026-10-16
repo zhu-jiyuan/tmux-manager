@@ -129,13 +129,17 @@ pub struct Pane {
     pub record: Option<String>,
     /// The directory the pane's foreground process is in.
     pub path: String,
+    /// The title its program set, tabs made spaces; empty while it is still
+    /// tmux's default, the host name.
+    pub title: String,
 }
 
 /// Everything a [`Pane`] holds, in one format string. Names come last
 /// because they may contain anything, even tabs.
 const PANE_FORMAT: &str = "#{session_id}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t\
      #{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{==:#{pane_current_command},#{b:default-shell}}\t\
-     #{@tm-agent}\t#{session_path}\t#{pane_current_path}\t#{session_name}\t#{window_name}";
+     #{@tm-agent}\t#{session_path}\t#{pane_current_path}\t\
+     #{?#{==:#{pane_title},#{host}},,#{s/\t/ /:pane_title}}\t#{session_name}\t#{window_name}";
 
 /// Every pane on the server in one call, sessions and windows in tmux's
 /// order; none with no server.
@@ -176,9 +180,10 @@ fn parse_panes(text: &str) -> Result<Vec<Pane>> {
                 record,
                 session_path,
                 path,
+                title,
                 session_name,
                 window_name,
-            ] = line.splitn(18, '\t').collect::<Vec<_>>()[..]
+            ] = line.splitn(19, '\t').collect::<Vec<_>>()[..]
             else {
                 bail!("list-panes: {line}");
             };
@@ -201,6 +206,7 @@ fn parse_panes(text: &str) -> Result<Vec<Pane>> {
                 at_prompt: at_prompt == "1",
                 record: (!record.is_empty()).then(|| record.to_string()),
                 path: path.to_string(),
+                title: title.to_string(),
             })
         })
         .collect()

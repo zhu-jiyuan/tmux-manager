@@ -64,16 +64,40 @@ impl Reason {
     }
 }
 
-/// What an agent is doing and, if it is known, why.
+/// What an agent is doing, why when that is known, and since when (Unix
+/// seconds) when a hook saw it start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Status {
     pub state: State,
     pub reason: Option<Reason>,
+    pub since: Option<u64>,
 }
 
 impl Status {
     pub fn new(state: State, reason: Option<Reason>) -> Self {
-        Status { state, reason }
+        Status {
+            state,
+            reason,
+            since: None,
+        }
+    }
+}
+
+/// Seconds since the Unix epoch.
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// How long ago `since` was, in its largest unit: `40s`, `12m`, `3h`, `2d`.
+pub fn age(since: u64, now: u64) -> String {
+    let seconds = now.saturating_sub(since);
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m", seconds / 60),
+        3600..86400 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86400),
     }
 }
 
@@ -267,8 +291,15 @@ pub fn hook(name: &str, event: Option<&str>) -> Result<()> {
         return Ok(());
     };
     // Everything in this pane shares its terminal, so ask ps for just that.
-    let tty = tmux::run(&["display-message", "-p", "-t", &pane, "#{pane_tty}"])?;
-    let table = processes_on(&[tty_name(&tty)])?;
+    let info = tmux::run(&[
+        "display-message",
+        "-p",
+        "-t",
+        &pane,
+        &format!("#{{pane_tty}}\t#{{{OPTION}}}"),
+    ])?;
+    let (tty, previous) = info.split_once('\t').unwrap_or((&info, ""));
+    let table = processes_on(&[tty_name(tty)])?;
     let mut owner = None;
     let mut pid = parent_id() as i32;
     while let Some(process) = table.get(&pid) {
@@ -284,9 +315,16 @@ pub fn hook(name: &str, event: Option<&str>) -> Result<()> {
     let Some((pid, started)) = owner else {
         return Ok(());
     };
+    // The same process in the same state keeps the time it got there.
+    let since = serde_json::from_str::<Record>(previous)
+        .ok()
+        .filter(|old| old.pid == pid && old.started == started && old.state == update.state)
+        .and_then(|old| old.since)
+        .unwrap_or_else(now);
     let record = Record {
         state: update.state,
         reason: update.reason,
+        since: Some(since),
         pid,
         started,
         harness: name.to_string(),
@@ -348,6 +386,15 @@ mod tests {
             State::Waiting,
             "no record: the harness reads the screen"
         );
+    }
+
+    #[test]
+    fn ages_take_their_largest_unit() {
+        assert_eq!(age(100, 140), "40s");
+        assert_eq!(age(100, 100 + 12 * 60 + 59), "12m");
+        assert_eq!(age(100, 100 + 3 * 3600), "3h");
+        assert_eq!(age(100, 100 + 2 * 86400), "2d");
+        assert_eq!(age(100, 50), "0s", "a clock that went back");
     }
 
     #[test]

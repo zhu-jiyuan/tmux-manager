@@ -55,6 +55,13 @@ pub trait Harness {
     /// What this harness's screen says when no record settles its state.
     fn hints(&self) -> &'static Hints;
 
+    /// The session's title, from the one it set on its pane (`title`, empty
+    /// when it set none). A harness that decorates its title overrides this.
+    fn title(&self, title: &str) -> Option<String> {
+        let title = title.trim();
+        (!title.is_empty()).then(|| title.to_string())
+    }
+
     /// The pane's status from this harness's live record and, when it does
     /// not settle it, the screen. `screen` captures once, on first use. Both
     /// harnesses so far name their permission hook `PermissionRequest`; one
@@ -68,10 +75,16 @@ pub trait Harness {
                 if seen.state == State::Working {
                     seen
                 } else {
-                    Status::new(State::Waiting, Some(Reason::Permission))
+                    Status {
+                        since: record.since,
+                        ..Status::new(State::Waiting, Some(Reason::Permission))
+                    }
                 }
             }
-            Some(record) => Status::new(record.state, record.reason),
+            Some(record) => Status {
+                since: record.since,
+                ..Status::new(record.state, record.reason)
+            },
             None => self.hints().read(&screen()),
         }
     }
@@ -85,6 +98,10 @@ pub struct Record {
     /// Absent from records written before reasons existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<Reason>,
+    /// When the process entered this state, in Unix seconds; absent from
+    /// records written before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
     pub pid: i32,
     pub started: String,
     pub harness: String,
@@ -241,6 +258,7 @@ mod tests {
         let record = |state, reason, event: &str| Record {
             state,
             reason,
+            since: None,
             pid: 1,
             started: "x".into(),
             harness: "test".into(),

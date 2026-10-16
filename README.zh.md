@@ -80,8 +80,10 @@ tmux 外、服务没在运行时，`tm` 会先启动服务来读取它。
 ## Agent
 
 `prefix + a` 列出所有正在运行或在等你的 Claude Code / Codex pane，等你的排在
-前面。每行显示 harness、pane 的位置（`session:window`，窗口分屏时加 `.pane`）、
-窗口名、目录、状态点，以及能判断出来时它在等什么：`permission`、`question`、
-`done` 或 `error`。`Enter` 直接跳到那个 pane，预览显示的也是它，`Ctrl-x` 关掉
-它，agent 也随之结束。等待原因主要来自 hook，所以先运行 `tm install-hooks`；
-没装 hook 时只有屏幕上出现提问或额度提示才能看出原因。
+前面。每个 agent 占两行：第一行是状态点和会话标题（没有标题时显示目录），第二行
+是 harness、pane 的位置（`session:window`，窗口分屏时加 `.pane`）、目录，以及
+它在等什么、等了多久：`permission`、`question`、`done` 或 `error`。输入时两行
+都参与搜索，移动和选择都以整项为单位。`Enter` 直接跳到那个 pane，预览显示的也
+是它，顶部是 agent 的状态；`Ctrl-x` 关掉它，agent 也随之结束。原因和时长来自
+hook，所以先运行 `tm install-hooks`；没装 hook 时只有屏幕上出现提问或额度提示
+才能看出原因。

@@ -1,7 +1,9 @@
 //! The lines fed to fzf.
 //!
-//! Each line is tab-separated: `id`, session name, padded tree name, padded
-//! breadcrumb name, padded activity dots, badge. fzf shows one of the two
+//! Each row is tab-separated: `id`, session name, padded tree name, padded
+//! breadcrumb name, padded activity dots, badge. Rows end in NUL rather than
+//! a newline (fzf runs with `--read0`), because an agent's row spans two
+//! lines. fzf shows one of the two
 //! name columns followed by the dots and the badge, searches the name column
 //! it shows, and uses field 1 (a [`RowId`]) to keep the cursor on the same
 //! row across reloads.
@@ -57,6 +59,8 @@ pub struct Data {
     pub session_dirs: HashMap<String, PathBuf>,
     /// Projects mode only.
     pub projects: Vec<Project>,
+    /// Unix seconds as the rows are made, for how long agents have waited.
+    pub now: u64,
 }
 
 impl Data {
@@ -91,6 +95,7 @@ pub fn fetch(popup: &Popup, mode: Mode) -> Result<Data> {
         favorites,
         session_dirs,
         projects,
+        now: agent::now(),
     })
 }
 
@@ -111,22 +116,56 @@ pub fn build(data: &Data, mode: Mode) -> Vec<Row> {
     rows
 }
 
-/// The rows of a mode as fzf reads them: one line each, newline-terminated.
+/// The rows of a mode as fzf reads them, each NUL-terminated.
 pub fn text(popup: &Popup, mode: Mode) -> Result<String> {
-    let mut text = layout(&build(&fetch(popup, mode)?, mode)).join("\n");
-    text.push('\n');
-    Ok(text)
+    Ok(layout(&build(&fetch(popup, mode)?, mode))
+        .iter()
+        .map(|row| format!("{row}\0"))
+        .collect())
 }
 
-/// One tab-separated line per row. Both name columns share a width, so the
+/// The rows of `text`, as [`text`] writes them.
+pub fn items(text: &str) -> impl Iterator<Item = &str> {
+    text.split_terminator('\0')
+}
+
+/// Cells across the widest line fzf shows of these rows: the name column,
+/// then the dots and the badge, each tab one cell wide (`--tabstop 1`).
+pub fn widest(text: &str) -> usize {
+    items(text)
+        .map(|row| {
+            let fields: Vec<&str> = row.split('\t').collect();
+            let shown = [2, 4, 5]
+                .iter()
+                .filter_map(|&i| fields.get(i).copied())
+                .collect::<Vec<_>>()
+                .join(" ");
+            width(&shown)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Cells across the widest line of `text`, which may span several.
+fn width(text: &str) -> usize {
+    text.lines().map(visible_width).max().unwrap_or(0)
+}
+
+/// `text` with its last line padded to `width` cells, where the columns
+/// after it go.
+fn pad_last(text: &str, width: usize) -> String {
+    let last = text.rsplit('\n').next().unwrap_or("");
+    format!(
+        "{text}{}",
+        " ".repeat(width.saturating_sub(visible_width(last)))
+    )
+}
+
+/// One tab-separated row each. Both name columns share a width, so the
 /// popup can swap them without moving the dots and badges.
 pub fn layout(rows: &[Row]) -> Vec<String> {
-    let widest = |column: fn(&Row) -> &str| {
-        rows.iter()
-            .map(|row| visible_width(column(row)))
-            .max()
-            .unwrap_or(0)
-    };
+    let widest =
+        |column: fn(&Row) -> &str| rows.iter().map(|row| width(column(row))).max().unwrap_or(0);
     let name_width = widest(|row| &row.tree).max(widest(|row| &row.breadcrumb));
     // At least one cell, so the badges do not shift when the first agent shows up.
     let dots_width = widest(|row| &row.dots).max(1);
@@ -136,8 +175,8 @@ pub fn layout(rows: &[Row]) -> Vec<String> {
                 "{}\t{}\t{} \t{} \t{} \t{}",
                 row.id,
                 row.name,
-                pad(&row.tree, name_width),
-                pad(&row.breadcrumb, name_width),
+                pad_last(&row.tree, name_width),
+                pad_last(&row.breadcrumb, name_width),
                 pad(&row.dots, dots_width),
                 row.badge
             )
@@ -270,6 +309,7 @@ mod tests {
             at_prompt: true,
             record: None,
             path: format!("/nowhere/{}", session.1),
+            title: String::new(),
         }
     }
 
@@ -281,6 +321,7 @@ mod tests {
             favorites: BTreeSet::new(),
             session_dirs: HashMap::new(),
             projects: Vec::new(),
+            now: 1_000_000,
         }
     }
 
@@ -441,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn agents_list_one_row_per_agent_waiting_first() {
+    fn agents_take_two_lines_waiting_first() {
         use crate::agent::{Reason, Status};
         let mut d = data(vec![
             pane(("$0", "alpha"), ("@0", 0, "zsh")),
@@ -449,18 +490,28 @@ mod tests {
             pane(("$1", "beta"), ("@2", 0, "codex")),
             pane(("$1", "beta"), ("@3", 1, "ended")),
         ]);
-        // Window @1 is split; its agent sits in pane 1.
+        // Window @1 is split; its agent sits in pane 1 and titled the session.
         d.panes[1].window_panes = 2;
         d.panes[1].index = 1;
         d.panes[1].path = format!("{}/work/api", crate::paths::home().display());
+        d.panes[1].title = "✳ Fix the build".into();
+        // Codex titles its pane with the directory's name, which says nothing new.
+        d.panes[2].title = "beta".into();
         d.favorites.insert("alpha".into());
-        let mut agent = |pane: &str, harness, state, reason| {
-            let status = Status::new(state, reason);
+        let mut agent = |pane: &str, harness, status| {
             d.agents.insert(pane.into(), Agent { harness, status });
         };
-        agent("%1", "claude", State::Working, None);
-        agent("%2", "codex", State::Waiting, Some(Reason::Permission));
-        agent("%3", "claude", State::Plain, None);
+        agent("%1", "claude", Status::new(State::Working, None));
+        let since = Some(d.now - 12 * 60);
+        agent(
+            "%2",
+            "codex",
+            Status {
+                since,
+                ..Status::new(State::Waiting, Some(Reason::Permission))
+            },
+        );
+        agent("%3", "claude", Status::new(State::Plain, None));
 
         let rows = build(&d, Mode::Agents);
         let ids: Vec<String> = rows.iter().map(|r| r.id.to_string()).collect();
@@ -472,21 +523,28 @@ mod tests {
         );
         let [tree, crumb, dots, badge] = fields(&rows[0]);
         assert_eq!(
-            (tree.as_str(), dots.as_str(), badge.as_str()),
-            (
-                "  codex   beta:0     codex   /nowhere/beta",
-                "●",
-                "permission"
-            )
+            tree, "● /nowhere/beta\n  codex · beta:0 · permission 12m",
+            "no title of its own: the directory, and why and how long it waits"
         );
-        assert_eq!(tree, crumb, "nothing to hide while filtering");
-        assert_eq!(rows[0].id, RowId::Pane("%2".into()));
+        assert_eq!(tree, crumb, "two lines while filtering too");
+        assert_eq!((dots.as_str(), badge.as_str()), ("", ""));
         assert_eq!(rows[0].name, "beta", "ctrl-s stars the pane's session");
-        let [tree, _, _, badge] = fields(&rows[1]);
+        let [tree, ..] = fields(&rows[1]);
         assert_eq!(
-            (tree.as_str(), badge.as_str()),
-            ("★ claude  alpha:1.1  claude  ~/work/api", ""),
-            "a split window names the pane; home is ~"
+            tree, "● Fix the build\n  claude · alpha:1.1 · ~/work/api",
+            "the title without its mark; a split window names the pane"
+        );
+        assert!(
+            rows[1].tree.contains("\x1b[1mFix the build"),
+            "{:?}",
+            rows[1].tree
+        );
+        assert!(rows[1].tree.contains("\x1b[32m●"), "working is green");
+        let lines = layout(&rows);
+        assert!(
+            lines[1].contains("~/work/api\x1b[0m \t"),
+            "padding goes on the last line: {:?}",
+            lines[1]
         );
     }
 

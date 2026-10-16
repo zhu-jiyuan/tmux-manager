@@ -25,6 +25,7 @@ use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail};
 
+use crate::ansi::visible_width;
 use crate::popup::{Mode, Popup};
 use crate::rows::{self, RowId};
 use crate::state::Switcher;
@@ -39,6 +40,40 @@ pub(crate) const LEGEND: &str = "ctrl-j/k move · ctrl-f/b page · tab mode\n\
 /// `--with-nth` while the query is empty (tree) and while filtering (breadcrumbs).
 pub(crate) const TREE_FIELDS: &str = "3,5,6";
 pub(crate) const FILTER_FIELDS: &str = "4,5,6";
+
+/// The preview window beside rows whose widest line takes `list` cells, in
+/// a picker `columns` wide. The list gets what its rows need, plus the
+/// pointer, gutter and scrollbar beside them, within 30% to 50% of the
+/// width, and the preview the rest. A full preview would make fzf show a
+/// scroll indicator, which `noinfo` hides.
+pub(crate) fn preview_window(list: usize, columns: usize) -> String {
+    let wanted = ((list + 4) * 100).div_ceil(columns.max(1));
+    format!(
+        "right,{}%,border-left,nowrap,noinfo",
+        100 - wanted.clamp(30, 50)
+    )
+}
+
+/// The preview window for `text`'s rows. The key legend shares the list's
+/// half, so the list is never narrower than the legend either.
+pub(crate) fn preview_for(text: &str) -> String {
+    let legend = LEGEND.lines().map(visible_width).max().unwrap_or(0);
+    preview_window(rows::widest(text).max(legend), columns())
+}
+
+/// How wide the picker is: fzf's own width in a key's callback, else the
+/// terminal's.
+pub(crate) fn columns() -> usize {
+    env::var("FZF_COLUMNS")
+        .ok()
+        .and_then(|columns| columns.parse().ok())
+        .or_else(|| {
+            crossterm::terminal::size()
+                .ok()
+                .map(|(c, _)| usize::from(c))
+        })
+        .unwrap_or(120)
+}
 
 /// Show `text` on the client's status line. display-message expands formats
 /// and strftime in its argument, so `#` and `%` are doubled to come out as
@@ -170,6 +205,7 @@ fn pick(fzf_bin: &Path, client: &Client, mode: Option<Mode>, popup: &Popup) -> R
     let me = fzf::me();
     let mut command = Command::new(fzf_bin);
     command.args([
+        "--read0",
         "--ansi",
         "--reverse",
         "--no-multi",
@@ -192,7 +228,7 @@ fn pick(fzf_bin: &Path, client: &Client, mode: Option<Mode>, popup: &Popup) -> R
         "--preview",
         &format!("{me} preview {{1}}"),
         "--preview-window",
-        "right,50%,border-left,nowrap",
+        &preview_for(&text),
         "--footer",
         LEGEND,
         // No gutter bar: fzf would otherwise paint every row's first column.
@@ -246,7 +282,7 @@ fn client_row(clients: &str, client: &str, rows: &str) -> Option<usize> {
         .lines()
         .find_map(|line| line.strip_prefix(&prefix))?
         .split_once('\t')?;
-    let index = rows.lines().position(|line| {
+    let index = rows::items(rows).position(|line| {
         let mut fields = line.split('\t');
         fields.next() == Some(window) && fields.next() == Some(session)
     })?;
@@ -325,9 +361,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_list_takes_what_its_rows_need() {
+        assert_eq!(
+            preview_window(30, 120),
+            "right,70%,border-left,nowrap,noinfo",
+            "at least 30%"
+        );
+        assert_eq!(
+            preview_window(46, 120),
+            "right,58%,border-left,nowrap,noinfo"
+        );
+        assert_eq!(
+            preview_window(90, 120),
+            "right,50%,border-left,nowrap,noinfo",
+            "at most 50%"
+        );
+    }
+
+    #[test]
     fn the_cursor_starts_on_the_clients_window() {
         // @1 is linked into both sessions; the client is in beta.
-        let rows = "$0\talpha\n@0\talpha\n@1\talpha\n$1\tbeta\n@1\tbeta\n";
+        let rows = "$0\talpha\0@0\talpha\0@1\talpha\0$1\tbeta\0@1\tbeta\0";
         let clients = "/dev/ttys001\t@0\talpha\n/dev/ttys002\t@1\tbeta\n";
         assert_eq!(client_row(clients, "/dev/ttys002", rows), Some(5));
         assert_eq!(client_row(clients, "/dev/ttys001", rows), Some(2));

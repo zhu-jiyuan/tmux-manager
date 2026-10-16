@@ -98,6 +98,18 @@ impl Harness for Claude {
     fn hints(&self) -> &'static Hints {
         &HINTS
     }
+
+    /// Claude Code titles its pane with the session's title behind a status
+    /// mark: `✳` at rest, a spinning dingbat or braille dot while it works.
+    fn title(&self, title: &str) -> Option<String> {
+        let title = title.trim_start_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(c, '·' | '*')
+                || ('\u{2700}'..='\u{27bf}').contains(&c)
+                || ('\u{2800}'..='\u{28ff}').contains(&c)
+        });
+        (!title.trim().is_empty()).then(|| title.trim().to_string())
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +185,20 @@ mod tests {
         );
         let update = Claude.hook(Some("Stop"), "").unwrap();
         assert_eq!(update.event, "Stop");
+    }
+
+    #[test]
+    fn titles_lose_the_status_mark() {
+        assert_eq!(
+            Claude.title("✳ Laya 在 yahoo 上的 token 速度").as_deref(),
+            Some("Laya 在 yahoo 上的 token 速度")
+        );
+        assert_eq!(
+            Claude.title("⠐ Fix the build").as_deref(),
+            Some("Fix the build")
+        );
+        assert_eq!(Claude.title("✻ "), None);
+        assert_eq!(Claude.title(""), None);
     }
 
     #[test]

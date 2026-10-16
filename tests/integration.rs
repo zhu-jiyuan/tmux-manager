@@ -16,14 +16,16 @@ const TM: &str = env!("CARGO_BIN_EXE_tm");
 /// fzf, as far as the picker can tell. It keeps the arguments and rows tm
 /// gave it next to itself (`fzf.args`, `fzf.rows`), prints `$TM_TEST_QUERY`
 /// for `--print-query`, then the row whose id is `$TM_TEST_PICK`; with no
-/// such row it exits 1, fzf's "no match". The real fzf would open the
-/// terminal running the tests.
+/// such row it exits 1, fzf's "no match". Rows end in NUL (`--read0`),
+/// which awk cannot take as a separator, so they are translated first. The
+/// real fzf would open the terminal running the tests.
 const FAKE_FZF: &str = r#"#!/bin/sh
 [ "$1" = --version ] && { echo 0.99.0; exit 0; }
 printf '%s\n' "$@" > "$0.args"
 cat > "$0.rows"
 printf '%s\n' "$TM_TEST_QUERY"
-awk -F '\t' -v pick="$TM_TEST_PICK" '$1 == pick { print; found = 1 } END { exit !found }' "$0.rows"
+tr '\0' '\036' < "$0.rows" |
+  awk -F '\t' -v RS='\036' -v pick="$TM_TEST_PICK" '$1 == pick { print; found = 1 } END { exit !found }'
 "#;
 
 /// Put the fake fzf in `dir/bin`; a `PATH` that finds it first.
@@ -293,6 +295,14 @@ impl Drop for Server {
     }
 }
 
+/// The `since` a hook record keeps, or 0 when it has none.
+fn since(record: &str) -> u64 {
+    serde_json::from_str::<serde_json::Value>(record)
+        .ok()
+        .and_then(|value| value["since"].as_u64())
+        .unwrap_or(0)
+}
+
 /// Text without its ANSI colour sequences.
 fn plain(text: &str) -> String {
     let mut out = String::new();
@@ -308,14 +318,19 @@ fn plain(text: &str) -> String {
     out
 }
 
+/// The rows of `tm list` output, which end in NUL.
+fn items(rows: &str) -> impl Iterator<Item = &str> {
+    rows.split_terminator('\0')
+}
+
 fn ids(rows: &str) -> Vec<String> {
-    rows.lines()
+    items(rows)
         .map(|line| line.split('\t').next().unwrap().to_string())
         .collect()
 }
 
 fn names(rows: &str) -> Vec<String> {
-    rows.lines()
+    items(rows)
         .map(|line| line.split('\t').nth(1).unwrap().to_string())
         .collect()
 }
@@ -355,7 +370,7 @@ fn rows_favorites_legend_and_refresh() {
         "",
         "the snapshot still matches the rows on show"
     );
-    let beta: Vec<&str> = rows.lines().nth(1).unwrap().split('\t').collect();
+    let beta: Vec<&str> = items(&rows).nth(1).unwrap().split('\t').collect();
     assert_eq!(beta[2].trim(), "beta");
     assert_eq!(
         beta[3].trim(),
@@ -368,7 +383,7 @@ fn rows_favorites_legend_and_refresh() {
     let rows = server.tm(&["list"]);
     assert_eq!(names(&rows), ["gamma", "alpha", "beta"]);
     assert!(
-        rows.lines()
+        items(&rows)
             .next()
             .unwrap()
             .split('\t')
@@ -470,8 +485,10 @@ fn inline_prompts_and_closing() {
     for prompt in ["windows> ", "projects> ", "agents> ", "sessions> "] {
         let switched = server.tm(&["mode"]);
         assert!(
-            switched.starts_with(&format!("change-prompt({prompt})+reload-sync(")),
-            "{switched}"
+            switched.starts_with(&format!(
+                "change-prompt({prompt})+change-preview-window(right,"
+            )) && switched.contains(",noinfo)+reload-sync("),
+            "the preview is sized to the new rows: {switched}"
         );
     }
 
@@ -558,7 +575,7 @@ fn windows_mode_lists_manages_and_previews_windows() {
             && ids[2].starts_with('@')
             && ids[3].starts_with('$')
     );
-    let header: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+    let header: Vec<&str> = items(&rows).next().unwrap().split('\t').collect();
     assert!(
         header[2].contains("\x1b[1malpha"),
         "session rows are bold headers: {:?}",
@@ -566,7 +583,7 @@ fn windows_mode_lists_manages_and_previews_windows() {
     );
     // The layout itself is unit-tested in rows/; here only that real windows
     // flow through it.
-    let editor: Vec<&str> = rows.lines().nth(2).unwrap().split('\t').collect();
+    let editor: Vec<&str> = items(&rows).nth(2).unwrap().split('\t').collect();
     assert_eq!(
         editor[1], "alpha",
         "window rows carry their session name for ctrl-s"
@@ -616,7 +633,7 @@ fn windows_mode_lists_manages_and_previews_windows() {
 
     server.tmux(&["split-window", "-d", "-t", &editor_id]);
     let listed = server.tm(&["list"]);
-    let split: Vec<&str> = listed.lines().nth(2).unwrap().split('\t').collect();
+    let split: Vec<&str> = items(&listed).nth(2).unwrap().split('\t').collect();
     assert!(split[5].contains("2 panes"), "{:?}", split[5]);
 
     assert!(
@@ -648,13 +665,13 @@ fn windows_mode_lists_manages_and_previews_windows() {
     server.tm(&["mode", "--sessions"]);
     assert!(!server.state.join("snap.mode").exists());
     assert_eq!(
-        server.tm(&["list"]).lines().count(),
+        items(&server.tm(&["list"])).count(),
         1,
         "sessions mode again, alpha gone"
     );
     server.tm(&["mode", "--windows"]);
     assert_eq!(
-        server.tm(&["list"]).lines().count(),
+        items(&server.tm(&["list"])).count(),
         4,
         "gamma and its three windows"
     );
@@ -751,8 +768,9 @@ fn agent_activity_from_hooks_and_from_the_screen() {
     let alpha = server.session_id("alpha");
     let preview = || plain(&server.tm(&["preview", &alpha]));
     assert!(
-        preview().starts_with("alpha  ·  1: agent"),
-        "the session row previews its agent, not the active shell: {:?}",
+        preview().starts_with("● claude · waiting\nalpha:1 · "),
+        "the session row previews its agent, not the active shell, under \
+         the agent's status: {:?}",
         preview()
     );
 
@@ -779,9 +797,20 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         record()
     );
     assert_eq!(activity(), r#"{"@0":"plain","@1":"working"}"#);
+
+    // A hook in the same state keeps the time the agent got there; a new
+    // state starts it again. Backdate the record to see which happened.
+    let backdated = record().replace(&format!("\"since\":{}", since(&record())), "\"since\":1");
+    server.tmux(&["set-option", "-p", "-t", &pane, "@tm-agent", &backdated]);
+    hook("PostToolUse", true);
+    assert_eq!(since(&record()), 1, "still working: {}", record());
+    hook("Stop", true);
+    assert!(since(&record()) > 1, "now waiting: {}", record());
+    hook("UserPromptSubmit", true);
+
     let session_dots = || {
         let rows = server.tm(&["list"]);
-        rows.lines()
+        items(&rows)
             .next()
             .unwrap()
             .split('\t')
@@ -893,21 +922,25 @@ fn agents_list_jumps_previews_and_closes() {
         "waiting first: {rows}"
     );
     let fields = |row: &str| -> Vec<String> { row.split('\t').map(plain).collect() };
-    let first = fields(rows.lines().next().unwrap());
+    let first = fields(items(&rows).next().unwrap());
     assert_eq!(first[1], "beta", "ctrl-s stars the pane's session");
+    let (headline, details) = first[2].split_once('\n').unwrap();
     assert!(
-        first[2].starts_with("  codex   beta:0.1  ") && first[5] == "permission",
-        "a split window names the pane, and the hook says why: {first:?}"
+        headline.starts_with("● ~/") && details.starts_with("  codex · beta:0.1 · permission "),
+        "no title, so the directory first; a split window names the pane, and \
+         the hook says why and since when: {first:?}"
     );
-    assert!(fields(rows.lines().nth(1).unwrap())[2].starts_with("  claude  alpha:1   agent"));
+    assert_eq!(first[2], first[3], "two lines while filtering too");
+    assert!(fields(items(&rows).nth(1).unwrap())[2].contains("\n  claude · alpha:1"));
 
     // An agent's row previews its own pane.
     let preview = plain(&server.tm(&["preview", &codex]));
-    assert!(preview.starts_with("beta  ·  0: "), "{preview:?}");
     assert!(
-        preview.contains("2 panes") && preview.contains("hook codex"),
+        preview.starts_with("● codex · waiting · permission ")
+            && preview.contains("\nbeta:0.1 · ~/"),
         "{preview:?}"
     );
+    assert!(preview.contains("hook codex"), "{preview:?}");
 
     // tab reaches the agents after the projects; keys act on the pane's window.
     server.tm(&["mode", "--projects"]);
@@ -927,7 +960,13 @@ fn agents_list_jumps_previews_and_closes() {
     // Enter takes the client to the pane itself, not just its window.
     let client = server.attach("alpha");
     server.pick(&["--agents"], &codex, "");
-    assert!(server.fzf().0.contains("\nagents> \n"));
+    let args = server.fzf().0;
+    assert!(
+        args.contains("\nagents> \n")
+            && args.lines().any(|arg| arg == "--read0")
+            && args.contains(",noinfo\n"),
+        "two-line rows need --read0, and a full preview no indicator: {args}"
+    );
     assert_eq!(server.showing(&client), "beta:0");
     assert_eq!(pane("beta:0"), codex, "the agent's pane is the active one");
 
@@ -975,7 +1014,7 @@ fn projects_mode_lists_and_opens_directories() {
         "a project with no session has its path for an id"
     );
     assert_eq!(ids[1], root.join("nested/alpha-app").to_str().unwrap());
-    let alpha: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+    let alpha: Vec<&str> = items(&rows).next().unwrap().split('\t').collect();
     assert_eq!(plain(alpha[4]).trim(), "", "no session, no dots");
     assert_eq!(
         plain(alpha[5]),
@@ -1017,11 +1056,11 @@ fn projects_mode_lists_and_opens_directories() {
         "open projects first: {rows}"
     );
     assert_eq!(
-        rows.lines().count(),
+        items(&rows).count(),
         4,
         "sessions outside the roots are not projects"
     );
-    let first: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+    let first: Vec<&str> = items(&rows).next().unwrap().split('\t').collect();
     assert_eq!(first[0], id, "an open project is its session's row");
     assert_eq!(first[4].matches('●').count(), 0, "no agent, no dot");
     assert!(plain(first[5]).contains("1 window"), "{:?}", first[5]);
@@ -1034,7 +1073,7 @@ fn projects_mode_lists_and_opens_directories() {
         "starred first: {rows}"
     );
     assert!(
-        plain(rows.lines().next().unwrap().split('\t').nth(2).unwrap()).starts_with("★ beta_app")
+        plain(items(&rows).next().unwrap().split('\t').nth(2).unwrap()).starts_with("★ beta_app")
     );
 
     // A project with no session previews its directory, and the row keys
@@ -1087,12 +1126,13 @@ fn shell_runs_keep_nothing() {
     // later run sees what it did.
     let sessions = shell(&["list"]);
     assert_eq!(names(&sessions), ["alpha", "beta"]);
-    assert_eq!(shell(&["list", "--windows"]).lines().count(), 5);
+    assert_eq!(items(&shell(&["list", "--windows"])).count(), 5);
     assert_eq!(shell(&["list", "--projects"]).trim(), "", "no roots set");
     for _ in 0..2 {
         let toggled = shell(&["mode"]);
         assert!(
-            toggled.starts_with("change-prompt(windows> )+reload-sync("),
+            toggled.starts_with("change-prompt(windows> )+change-preview-window(")
+                && toggled.contains("+reload-sync("),
             "{toggled}"
         );
     }
@@ -1169,8 +1209,7 @@ fn the_picker_takes_the_client_to_the_pick() {
     // Opened for a client, the window list starts on the window it shows.
     server.pick(&["--client", &client.name, "--windows"], "", "");
     let (args, rows) = server.fzf();
-    let at = rows
-        .lines()
+    let at = items(&rows)
         .position(|row| row.starts_with(&window))
         .unwrap();
     assert!(args.contains(&format!("load:pos({})", at + 1)), "{args}");
